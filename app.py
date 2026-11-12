@@ -27,6 +27,7 @@ def initialize():
     with db() as conn:
         conn.execute("CREATE TABLE IF NOT EXISTS message_events (event_id TEXT PRIMARY KEY, group_id TEXT NOT NULL, user_id TEXT NOT NULL, display_name TEXT NOT NULL, message_date TEXT NOT NULL)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_message_group_date ON message_events(group_id,message_date)")
+        conn.execute("ALTER TABLE message_events ADD COLUMN IF NOT EXISTS message_hour SMALLINT")
         conn.execute("CREATE TABLE IF NOT EXISTS member_profiles (group_id TEXT NOT NULL,user_id TEXT NOT NULL,display_name TEXT NOT NULL,updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),PRIMARY KEY(group_id,user_id))")
         conn.execute("CREATE TABLE IF NOT EXISTS mention_members (group_id TEXT NOT NULL,category TEXT NOT NULL,user_id TEXT NOT NULL,PRIMARY KEY(group_id,category,user_id))")
         conn.execute("CREATE TABLE IF NOT EXISTS processed_events (event_id TEXT PRIMARY KEY,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())")
@@ -333,8 +334,8 @@ def handle(event):
         if not inserted: return
         conn.execute("""INSERT INTO member_profiles(group_id,user_id,display_name) VALUES(%s,%s,%s)
             ON CONFLICT(group_id,user_id) DO UPDATE SET display_name=EXCLUDED.display_name,updated_at=NOW()""", (group,user,name))
-        conn.execute("""INSERT INTO message_events(event_id,group_id,user_id,display_name,message_date)
-            VALUES(%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (eid,group,user,name,day))
+        conn.execute("""INSERT INTO message_events(event_id,group_id,user_id,display_name,message_date,message_hour)
+            VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (eid,group,user,name,day,datetime.now(KST).hour))
     # Region roster: administrator-managed plain names, without LINE mentions.
     region_edit = re.fullmatch(r"/지역(추가|삭제)\s+([가-힣A-Za-z0-9]{2,20})\s+(.{1,60})", text)
     if region_edit:
@@ -422,6 +423,36 @@ def handle(event):
         else:
             title, choices = "🍴 오늘의 메뉴 추천", tuple(dict.fromkeys(lunch + dinner))
         reply(token, f"{title}\n🎯 {secrets.choice(choices)}!\n다시 뽑으려면 {text} 입력해 줘.")
+        return
+    if text == "*방통계":
+        from datetime import timedelta
+        today = datetime.now(KST).date()
+        start = (today - timedelta(days=6)).isoformat()
+        with db() as conn:
+            today_row = conn.execute(
+                """SELECT COUNT(*), COUNT(DISTINCT user_id) FROM message_events
+                   WHERE group_id=%s AND message_date=%s""",
+                (group, today.isoformat())).fetchone()
+            week_row = conn.execute(
+                """SELECT COUNT(*), COUNT(DISTINCT user_id) FROM message_events
+                   WHERE group_id=%s AND message_date >= %s AND message_date <= %s""",
+                (group, start, today.isoformat())).fetchone()
+            peak = conn.execute(
+                """SELECT message_hour, COUNT(*) AS cnt FROM message_events
+                   WHERE group_id=%s AND message_date=%s AND message_hour IS NOT NULL
+                   GROUP BY message_hour ORDER BY cnt DESC, message_hour ASC LIMIT 1""",
+                (group, today.isoformat())).fetchone()
+        peak_text = f"{peak[0]:02d}:00~{peak[0]:02d}:59 ({peak[1]}개)" if peak else "기록 없음"
+        reply(token,
+              f"📊 단체방 활동 통계\n"
+              f"📅 오늘 ({today.strftime('%m/%d')})\n"
+              f"💬 메시지: {today_row[0]:,}개\n"
+              f"👥 활동 인원: {today_row[1]:,}명\n"
+              f"⏰ 가장 활발한 시간: {peak_text}\n\n"
+              f"📆 최근 7일 ({start} ~ {today.isoformat()})\n"
+              f"💬 총 메시지: {week_row[0]:,}개\n"
+              f"👥 활동 인원: {week_row[1]:,}명\n"
+              f"※ 레드봇이 수집한 텍스트 메시지 기준. 시간대는 업데이트 이후 기록부터 집계돼.")
         return
     if text == "*주사위":
         reply(token, f"🎲 주사위 결과: {secrets.randbelow(6) + 1}!")
