@@ -271,21 +271,16 @@ def ai(question):
     if (any(word in normalized for word in ("지금", "현재", "한국시간"))
             and any(word in normalized for word in ("몇시", "시간", "몇분"))):
         return f"현재 한국 시간은 {now.hour:02d}시 {now.minute:02d}분이에요. 🇰🇷"
-    # Authoritative current office-holder answer; avoid stale language-model memory.
-    president_question = ("대통령" in normalized and
-                          any(t in normalized for t in ("현재", "지금", "오늘", "현직", "누구", "누가", "이름", "대한민국", "한국", "우리나라")))
-    historical_question = any(t in normalized for t in ("전직", "전대", "역대", "과거", "이전", "전임", "당시", "2024", "2023", "2022", "탄핵", "윤석열"))
-    if president_question and not historical_question:
-        return "현재 대한민국 대통령은 이재명 대통령입니다. (2026년 11월 기준)"
     if not GEMINI_KEY: return "관리자에게 GEMINI_API_KEY 설정을 요청해 주세요."
-    # For rapidly changing facts, require live grounding; do not answer from stale training data.
-    current_terms = ("현재", "지금", "오늘", "최신", "요즘", "이번", "누구", "누가", "대통령", "총리", "장관", "환율", "주가", "날씨", "뉴스", "당선", "취임", "순위", "가격", "현직")
-    fresh_topics = ("대통령", "총리", "장관", "정부", "정치", "환율", "주가", "날씨", "뉴스", "선거", "당선", "취임", "현직", "대표", "시장", "가격")
+    # Ground factual lookup questions in web search; avoid unverified model recall.
+    current_terms = ("현재", "지금", "오늘", "최신", "요즘", "이번", "누구", "누가", "대통령", "총리", "장관", "환율", "주가", "날씨", "뉴스", "당선", "취임", "순위", "가격", "현직", "언제", "어디", "얼마", "몇", "발표", "결과", "통계", "사실", "출처", "근거")
+    fresh_topics = ("대통령", "총리", "장관", "정부", "정치", "환율", "주가", "날씨", "뉴스", "선거", "당선", "취임", "현직", "대표", "시장", "가격", "경기", "순위", "출시", "업데이트", "법률", "정책", "인구", "통계", "사건", "사고", "연예", "스포츠", "주식", "코인", "금리", "부동산")
     needs_live = (any(t in normalized for t in fresh_topics)
-                  and any(t in normalized for t in current_terms))
+                  or (any(t in normalized for t in current_terms)
+                      and not any(t in normalized for t in ("소설", "시를", "농담", "이야기만들", "번역", "맞춤법"))))
     base = "https://generativelanguage.googleapis.com/v1beta"
     payload = {
-        "systemInstruction": {"parts": [{"text": f"현재 기준 시간은 대한민국 서울(Asia/Seoul) {today_text} {now.hour:02d}시 {now.minute:02d}분입니다. 오늘 날짜와 현재 시간에 관한 질문에는 이 정보를 정확히 사용하세요. 한국어로 핵심만 간결하게 답변하세요. 간단한 질문에는 1~3문장으로 답하세요. 실시간 검색이 필요한 최신 사실은 확인하지 못했다면 추측하지 마세요."}]},
+        "systemInstruction": {"parts": [{"text": f"현재 기준 시간은 대한민국 서울(Asia/Seoul) {today_text} {now.hour:02d}시 {now.minute:02d}분입니다. 오늘 날짜와 현재 시간에 관한 질문에는 이 정보를 정확히 사용하세요. 한국어로 핵심만 정확하고 간결하게 답변하세요. 간단한 질문에는 1~3문장으로 답하세요. 질문의 국가·인물·날짜·단위를 정확히 구분하고, 질문이 모호하면 필요한 조건을 짧게 확인하세요. 확인되지 않은 수치·날짜·인용·출처를 만들어내지 마세요. 검색 결과가 충돌하면 최신성과 공신력을 비교하고, 확인된 사실과 불확실한 내용을 구분하세요. 검색 근거가 있는 최신 사실은 확인된 정보만 답하고, 가능하면 출처의 사이트명과 링크를 제시하세요. 실시간 검색이 필요한 최신 사실을 확인하지 못했다면 추측하지 마세요."}]},
         "contents": [{"parts": [{"text": question[:2000]}]}],
         "generationConfig": {"maxOutputTokens": 400, "thinkingConfig": {"thinkingBudget": 0}}
     }
@@ -336,7 +331,21 @@ def ai(question):
                 return "최신 정보를 확인할 근거가 부족해요. 정확하지 않은 답변 대신 확인이 필요하다고 알려드릴게요."
         _working_gemini_model = model
         parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
-        return ("".join(p.get("text", "") for p in parts).strip() or "AI 답변이 비어 있어요.")[:4800]
+        answer = "".join(p.get("text", "") for p in parts).strip() or "AI 답변이 비어 있어요."
+        if needs_live:
+            metadata = r.json().get("candidates", [{}])[0].get("groundingMetadata", {})
+            sources = []
+            for chunk in metadata.get("groundingChunks", []):
+                web = chunk.get("web") or {}
+                uri = web.get("uri", "")
+                title = web.get("title", "출처")
+                if uri.startswith("https://") and uri not in [u for _, u in sources]:
+                    sources.append((title[:55], uri))
+                if len(sources) >= 2:
+                    break
+            if sources:
+                answer += "\n\n🔎 확인한 출처:\n" + "\n".join(f"• {title}: {uri}" for title, uri in sources)
+        return answer[:4800]
     except (requests.RequestException, ValueError, IndexError, KeyError):
         return "AI 연결에 문제가 있어요."
 
