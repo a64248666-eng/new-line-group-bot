@@ -69,16 +69,29 @@ def utf16len(s):
 
 def mention_text(group, category):
     with db() as conn:
-        ids = [r[0] for r in conn.execute("SELECT user_id FROM mention_members WHERE group_id=%s AND category=%s ORDER BY user_id", (group, category))]
-    if not ids: return f"{category} 명단이 비어 있습니다.", None
-    text = f"📢 {category} 호출!\n"
-    mentions = []
-    for uid in ids[:20]:
-        tag = "@" + profile(group, uid).replace("\n", " ")[:40]
-        mentions.append({"index": utf16len(text), "length": utf16len(tag), "type": "user", "userId": uid})
-        text += tag + " "
-    if len(ids) > 20: text += f"\n(20명까지 호출, 나머지 {len(ids)-20}명 제외)"
-    return text, mentions
+        ids = [r[0] for r in conn.execute(
+            "SELECT user_id FROM mention_members WHERE group_id=%s AND category=%s ORDER BY user_id",
+            (group, category))]
+    if not ids:
+        return {"type": "text", "text": f"{category} 명단이 비어 있습니다."}
+    # Outgoing mentions require textV2 substitution, not webhook-style mention offsets.
+    text = f"📢 {category} 호출!\\n"
+    substitution = {}
+    for i, uid in enumerate(ids[:20]):
+        key = f"member{i}"
+        text += "{" + key + "} "
+        substitution[key] = {"type": "mention", "mentionee": {"type": "user", "userId": uid}}
+    if len(ids) > 20:
+        text += f"\\n(20명까지 호출, 나머지 {len(ids)-20}명 제외)"
+    return {"type": "textV2", "text": text, "substitution": substitution}
+
+def reply_message(token, message):
+    r = requests.post(API + "/message/reply",
+        json={"replyToken": token, "messages": [message]},
+        headers=headers(), timeout=12)
+    if not r.ok:
+        app.logger.warning("LINE reply status %s: %s", r.status_code, r.text[:500])
+    r.raise_for_status()
 
 _working_gemini_model = None
 
@@ -200,8 +213,7 @@ def handle(event):
         reply(token, counts(group, date.isoformat()))
         return
     if text in ("*남초", "*여초"):
-        output, mentions = mention_text(group, text[1:])
-        reply(token, output, mentions)
+        reply_message(token, mention_text(group, text[1:]))
         return
     match = re.fullmatch(r"/(남초|여초)(추가|삭제|목록)(?:\s+.*)?", text)
     if match:
