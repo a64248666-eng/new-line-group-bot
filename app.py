@@ -397,17 +397,20 @@ def handle(event):
             ON CONFLICT(group_id,user_id) DO UPDATE SET display_name=EXCLUDED.display_name,updated_at=NOW()""", (group,user,name))
         conn.execute("""INSERT INTO message_events(event_id,group_id,user_id,display_name,message_date,message_hour)
             VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (eid,group,user,name,day,datetime.now(KST).hour))
-    if text.startswith("/포인트추가"):
+    if text == "/포인트추가" or text.startswith("/포인트추가 "):
         if user not in ADMINS:
             reply(token, "⛔ 포인트 지급은 관리자만 가능해.")
             return
-        targets = list(dict.fromkeys(
-            m["userId"] for m in (message.get("mention") or {}).get("mentionees", [])
-            if m.get("userId") and not m.get("isSelf")
-        ))
-        if not targets or not re.fullmatch(r"/포인트추가\\s+.+", text):
-            reply(token, "사용법: /포인트추가 @멤버\\nLINE에서 실제 멤버를 멘션해 줘.\\n1명당 2,000P가 지급돼.")
-            return
+        if text == "/포인트추가":
+            targets = [user]
+        else:
+            targets = list(dict.fromkeys(
+                m["userId"] for m in (message.get("mention") or {}).get("mentionees", [])
+                if m.get("userId")
+            ))
+            if not targets:
+                reply(token, "사용법: /포인트추가 (관리자 본인) 또는 /포인트추가 @멤버")
+                return
         with db() as conn:
             for target in targets:
                 conn.execute("""INSERT INTO game_points(group_id,user_id,points)
