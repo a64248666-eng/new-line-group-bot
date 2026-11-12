@@ -406,7 +406,7 @@ def handle(event):
             if m.get("userId") and not m.get("isSelf")
         ))
         if not targets or not re.fullmatch(r"/포인트추가\\s+.+", text):
-            reply(token, "사용법: /포인트추가 @멤버\nLINE에서 실제 멤버를 멘션해 줘.\n1명당 2,000P가 지급돼.")
+            reply(token, "사용법: /포인트추가 @멤버\\nLINE에서 실제 멤버를 멘션해 줘.\\n1명당 2,000P가 지급돼.")
             return
         with db() as conn:
             for target in targets:
@@ -414,7 +414,7 @@ def handle(event):
                     VALUES(%s,%s,2000)
                     ON CONFLICT(group_id,user_id)
                     DO UPDATE SET points=game_points.points+2000""", (group,target))
-        reply(token, f"🎁 관리자 포인트 지급 완료!\n대상: {len(targets)}명\n1명당 +2,000P")
+        reply(token, f"🎁 관리자 포인트 지급 완료!\\n대상: {len(targets)}명\\n1명당 +2,000P")
         return
     if text in ("/정각알림켜기", "/정각알림끄기", "/정각알림상태"):
         if text != "/정각알림상태" and user not in ADMINS:
