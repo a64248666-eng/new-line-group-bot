@@ -82,11 +82,30 @@ def mention_text(group, category):
 
 def ai(question):
     if not GEMINI_KEY: return "관리자에게 GEMINI_API_KEY 설정을 요청해 주세요."
+    base = "https://generativelanguage.googleapis.com/v1beta"
+    payload = {"contents": [{"parts": [{"text": question[:3000]}]}], "generationConfig": {"maxOutputTokens": 900}}
+    def generate(model):
+        return requests.post(f"{base}/models/{model}:generateContent",
+            headers={"x-goog-api-key": GEMINI_KEY}, json=payload, timeout=22)
     try:
-        r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent",
-            headers={"x-goog-api-key": GEMINI_KEY},
-            json={"contents": [{"parts": [{"text": question[:3000]}]}], "generationConfig": {"maxOutputTokens": 900}},
-            timeout=22)
+        r = generate(GEMINI_MODEL)
+        if r.status_code == 404:
+            # Models can be retired or unavailable for a particular API key.
+            # Discover supported generateContent models rather than hardcoding a retired ID.
+            listing = requests.get(f"{base}/models", headers={"x-goog-api-key": GEMINI_KEY}, timeout=12)
+            if listing.ok:
+                models = [m.get("name", "").removeprefix("models/") for m in listing.json().get("models", [])
+                          if "generateContent" in m.get("supportedGenerationMethods", [])]
+                flash = [m for m in models if "flash" in m.lower() and "image" not in m.lower()
+                         and "tts" not in m.lower() and "live" not in m.lower()]
+                alternatives = flash or models
+                alternatives.sort(key=lambda m: ("preview" in m.lower(), "lite" in m.lower(), m), reverse=False)
+                for model in alternatives[:5]:
+                    if model == GEMINI_MODEL: continue
+                    r = generate(model)
+                    if r.status_code != 404: break
+            else:
+                app.logger.warning("Gemini model listing status %s", listing.status_code)
         if r.status_code == 429: return "AI 무료 사용량 한도에 도달했어요. 나중에 다시 시도해 주세요."
         if not r.ok:
             app.logger.warning("Gemini status %s", r.status_code)
