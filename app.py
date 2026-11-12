@@ -99,12 +99,20 @@ def ai(question):
             and any(word in normalized for word in ("몇시", "시간", "몇분"))):
         return f"현재 한국 시간은 {now.hour:02d}시 {now.minute:02d}분이에요. 🇰🇷"
     if not GEMINI_KEY: return "관리자에게 GEMINI_API_KEY 설정을 요청해 주세요."
+    # For rapidly changing facts, require live grounding; do not answer from stale training data.
+    current_terms = ("현재", "지금", "오늘", "최신", "요즘", "이번", "누구", "누가", "대통령", "총리", "장관", "환율", "주가", "날씨", "뉴스", "당선", "취임", "순위", "가격", "현직")
+    fresh_topics = ("대통령", "총리", "장관", "정부", "정치", "환율", "주가", "날씨", "뉴스", "선거", "당선", "취임", "현직", "대표", "시장", "가격")
+    needs_live = (any(t in normalized for t in fresh_topics)
+                  and any(t in normalized for t in current_terms))
     base = "https://generativelanguage.googleapis.com/v1beta"
     payload = {
         "systemInstruction": {"parts": [{"text": f"현재 기준 시간은 대한민국 서울(Asia/Seoul) {today_text} {now.hour:02d}시 {now.minute:02d}분입니다. 오늘 날짜와 현재 시간에 관한 질문에는 이 정보를 정확히 사용하세요. 한국어로 핵심만 간결하게 답변하세요. 간단한 질문에는 1~3문장으로 답하세요. 실시간 검색이 필요한 최신 사실은 확인하지 못했다면 추측하지 마세요."}]},
         "contents": [{"parts": [{"text": question[:2000]}]}],
         "generationConfig": {"maxOutputTokens": 400, "thinkingConfig": {"thinkingBudget": 0}}
     }
+    if needs_live:
+        payload["tools"] = [{"google_search": {}}]
+        payload["generationConfig"].pop("thinkingConfig", None)
     def generate(model):
         return requests.post(f"{base}/models/{model}:generateContent",
             headers={"x-goog-api-key": GEMINI_KEY}, json=payload, timeout=18)
@@ -135,10 +143,18 @@ def ai(question):
                         break
             else:
                 app.logger.warning("Gemini model listing status %s", listing.status_code)
+        if needs_live and not r.ok:
+            app.logger.warning("Gemini grounded search status %s", r.status_code)
+            return "최신 정보를 실시간으로 확인하지 못했어요. 정확하지 않은 정보를 알려드리지 않기 위해 답변을 보류할게요."
         if r.status_code == 429: return "AI 무료 사용량 한도에 도달했어요. 나중에 다시 시도해 주세요."
         if not r.ok:
             app.logger.warning("Gemini status %s", r.status_code)
             return "AI 답변을 불러올 수 없어요."
+        if needs_live:
+            candidates = r.json().get("candidates", [])
+            metadata = candidates[0].get("groundingMetadata", {}) if candidates else {}
+            if not metadata.get("groundingChunks"):
+                return "최신 정보를 확인할 근거가 부족해요. 정확하지 않은 답변 대신 확인이 필요하다고 알려드릴게요."
         _working_gemini_model = model
         parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
         return ("".join(p.get("text", "") for p in parts).strip() or "AI 답변이 비어 있어요.")[:4800]
