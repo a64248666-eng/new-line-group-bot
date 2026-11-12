@@ -75,14 +75,14 @@ def mention_text(group, category):
     if not ids:
         return {"type": "text", "text": f"{category} 명단이 비어 있습니다."}
     # Outgoing mentions require textV2 substitution, not webhook-style mention offsets.
-    text = f"📢 {category} 호출!\\n"
+    text = f"📢 {category} 호출!\n"
     substitution = {}
     for i, uid in enumerate(ids[:20]):
         key = f"member{i}"
         text += "{" + key + "} "
         substitution[key] = {"type": "mention", "mentionee": {"type": "user", "userId": uid}}
     if len(ids) > 20:
-        text += f"\\n(20명까지 호출, 나머지 {len(ids)-20}명 제외)"
+        text += f"\n(20명까지 호출, 나머지 {len(ids)-20}명 제외)"
     return {"type": "textV2", "text": text, "substitution": substitution}
 
 def reply_message(token, message):
