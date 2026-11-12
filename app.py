@@ -397,13 +397,12 @@ def handle(event):
                 lines.append(line)
             reply(token, "\n".join(lines))
             return
-        # Avoid interfering with existing commands; only recognize known regions.
-        with db() as conn:
-            exists = conn.execute(
-                "SELECT 1 FROM region_members WHERE group_id=%s AND region=%s LIMIT 1",
-                (group,region)).fetchone()
-        if exists:
-            reply(token, f"{region} 명단이 비어 있어.")
+        # Only respond to recognizable geographic names; keep other slash commands intact.
+        if region in WEATHER_CITIES or region in WEATHER_ALIASES or region in (
+            "경기", "경기도", "강원", "강원도", "충북", "충청북도", "충남", "충청남도",
+            "전북", "전라북도", "전남", "전라남도", "경북", "경상북도", "경남", "경상남도",
+            "제주도", "세종시"):
+            reply(token, f"📍 {region} 명단은 아직 비어 있어.")
             return
     if text == "*주사위":
         reply(token, f"🎲 주사위 결과: {secrets.randbelow(6) + 1}!")
