@@ -252,9 +252,10 @@ def weather_forecast(question, now):
 
 
 _working_gemini_model = None
+_gemini_quota_pause_until = 0.0
 
 def ai(question):
-    global _working_gemini_model
+    global _working_gemini_model, _gemini_quota_pause_until
     now = datetime.now(KST)
     normalized = re.sub(r"\s+", "", question).rstrip("?!？!。.")
     forecast = weather_forecast(question, now)
@@ -273,17 +274,20 @@ def ai(question):
             and any(word in normalized for word in ("몇시", "시간", "몇분"))):
         return f"현재 한국 시간은 {now.hour:02d}시 {now.minute:02d}분이에요. 🇰🇷"
     if not GEMINI_KEY: return "관리자에게 GEMINI_API_KEY 설정을 요청해 주세요."
+    if time.monotonic() < _gemini_quota_pause_until:
+        return "⏳ Gemini 사용량 제한으로 잠시 쉬고 있어. 몇 분 뒤 다시 질문해 줘."
     # Ground factual lookup questions in web search; avoid unverified model recall.
-    current_terms = ("현재", "지금", "오늘", "최신", "요즘", "이번", "누구", "누가", "대통령", "총리", "장관", "환율", "주가", "날씨", "뉴스", "당선", "취임", "순위", "가격", "현직", "언제", "어디", "얼마", "몇", "발표", "결과", "통계", "사실", "출처", "근거")
-    fresh_topics = ("대통령", "총리", "장관", "정부", "정치", "환율", "주가", "날씨", "뉴스", "선거", "당선", "취임", "현직", "대표", "시장", "가격", "경기", "순위", "출시", "업데이트", "법률", "정책", "인구", "통계", "사건", "사고", "연예", "스포츠", "주식", "코인", "금리", "부동산")
-    needs_live = (any(t in normalized for t in fresh_topics)
-                  or (any(t in normalized for t in current_terms)
-                      and not any(t in normalized for t in ("소설", "시를", "농담", "이야기만들", "번역", "맞춤법"))))
+    # Search only when the user explicitly asks for current, changing facts.
+    live_markers = ("최신", "실시간", "오늘", "지금", "현재", "이번주", "이번달", "올해", "최근", "방금", "속보", "뉴스", "현직", "출처", "검색해", "찾아줘")
+    changing_topics = ("대통령", "총리", "장관", "환율", "주가", "가격", "금리", "날씨", "선거", "경기결과", "순위", "출시", "정책", "법률", "사건", "사고", "스포츠", "주식", "코인", "부동산", "통계")
+    needs_live = any(t in normalized for t in live_markers) or (
+        any(t in normalized for t in changing_topics)
+        and any(t in normalized for t in ("누구", "누가", "얼마", "몇위", "언제", "어떻게됐", "알려줘", "확인해")))
     base = "https://generativelanguage.googleapis.com/v1beta"
     payload = {
         "systemInstruction": {"parts": [{"text": f"현재 기준 시간은 대한민국 서울(Asia/Seoul) {today_text} {now.hour:02d}시 {now.minute:02d}분입니다. 오늘 날짜와 현재 시간에 관한 질문에는 이 정보를 정확히 사용하세요. 한국어로 핵심만 정확하고 간결하게 답변하세요. 간단한 질문에는 1~3문장으로 답하세요. 질문의 국가·인물·날짜·단위를 정확히 구분하고, 질문이 모호하면 필요한 조건을 짧게 확인하세요. 확인되지 않은 수치·날짜·인용·출처를 만들어내지 마세요. 검색 결과가 충돌하면 최신성과 공신력을 비교하고, 확인된 사실과 불확실한 내용을 구분하세요. 검색 근거가 있는 최신 사실은 확인된 정보만 답하고, 가능하면 출처의 사이트명과 링크를 제시하세요. 실시간 검색이 필요한 최신 사실을 확인하지 못했다면 추측하지 마세요."}]},
         "contents": [{"parts": [{"text": question[:2000]}]}],
-        "generationConfig": {"maxOutputTokens": 1600}
+        "generationConfig": {"maxOutputTokens": 900}
     }
     if needs_live:
         payload["tools"] = [{"google_search": {}}]
@@ -291,7 +295,7 @@ def ai(question):
     def generate(model):
         # Enable modest reasoning for Gemini 2.5 Flash; leave newer models on their defaults.
         if model.startswith("gemini-2.5-flash") and "lite" not in model:
-            payload["generationConfig"]["thinkingConfig"] = {"thinkingBudget": 512}
+            payload["generationConfig"]["thinkingConfig"] = {"thinkingBudget": 256}
         else:
             payload["generationConfig"].pop("thinkingConfig", None)
         response = None
@@ -336,6 +340,7 @@ def ai(question):
             else:
                 app.logger.warning("Gemini model listing status %s", listing.status_code)
         if r.status_code == 429:
+            _gemini_quota_pause_until = time.monotonic() + 180
             app.logger.warning("Gemini quota exceeded (429)")
             return "⏳ Gemini API 요청 한도에 도달했어. 잠시 후 다시 시도해 줘. 반복되면 API 사용량·할당량을 확인해야 해."
         if r.status_code in (500, 502, 503, 504):
