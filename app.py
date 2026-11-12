@@ -626,11 +626,11 @@ def handle(event):
                 WHERE group_id=%s AND user_id=%s AND mission_date=%s""",
                 (group,user,day)).fetchone()
         progress, claimed = row if row else (0,False)
-        reply(token, f"🎯 {name}님의 오늘 미션\\n일반 대화 10회 참여하기 ({progress}/10)\\n"
-              "※ 4글자 이상 일반 대화만 인정, 60초 간격으로 집계\\n"
+        reply(token, f"🎯 {name}님의 오늘 미션\n일반 대화 10회 참여하기 ({progress}/10)\n"
+              "※ 4글자 이상 일반 대화만 인정, 60초 간격으로 집계\n"
               + ("🎉 보상 수령 완료!" if claimed else
                  "🎁 완료! *미션보상 입력해서 20P 받기" if progress >= 10 else
-                 "🏅 달성 보상: 20P\\n완료 후 *미션보상 입력"))
+                 "🏅 달성 보상: 20P\n완료 후 *미션보상 입력"))
         return
     if text == "*미션보상":
         with db() as conn:
@@ -676,9 +676,9 @@ def handle(event):
                     reward = conn.execute("""SELECT reward FROM daily_treasure
                         WHERE group_id=%s AND user_id=%s AND treasure_date=%s""",
                         (group,user,day)).fetchone()[0]
-        reply(token, (f"🎁 {name}님의 보물상자!\\n"
+        reply(token, (f"🎁 {name}님의 보물상자!\n"
               + (f"✨ {reward}P 획득!" if fresh else f"오늘은 이미 열었어! ({reward}P 획득 기록)")
-              + "\\n⏰ 내일 0시(한국 시간)에 다시 열 수 있어."))
+              + "\n⏰ 내일 0시(한국 시간)에 다시 열 수 있어."))
         return
     if text == "*출석":
         from datetime import timedelta
