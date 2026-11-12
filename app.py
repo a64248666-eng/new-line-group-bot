@@ -43,6 +43,15 @@ def initialize():
         conn.execute("""CREATE TABLE IF NOT EXISTS hourly_alert_deliveries (
             group_id TEXT NOT NULL, hour_key TEXT NOT NULL,
             PRIMARY KEY(group_id,hour_key))""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS daily_missions (
+            group_id TEXT NOT NULL, user_id TEXT NOT NULL, mission_date TEXT NOT NULL,
+            progress INTEGER NOT NULL DEFAULT 0, last_counted_at TIMESTAMPTZ,
+            claimed BOOLEAN NOT NULL DEFAULT FALSE,
+            PRIMARY KEY(group_id,user_id,mission_date))""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS daily_treasure (
+            group_id TEXT NOT NULL, user_id TEXT NOT NULL, treasure_date TEXT NOT NULL,
+            reward INTEGER NOT NULL,
+            PRIMARY KEY(group_id,user_id,treasure_date))""")
         conn.execute("""CREATE TABLE IF NOT EXISTS game_points (
             group_id TEXT NOT NULL, user_id TEXT NOT NULL,
             points INTEGER NOT NULL DEFAULT 0, attendance_days INTEGER NOT NULL DEFAULT 0,
@@ -435,6 +444,17 @@ def handle(event):
             ON CONFLICT(group_id,user_id) DO UPDATE SET display_name=EXCLUDED.display_name,updated_at=NOW()""", (group,user,name))
         conn.execute("""INSERT INTO message_events(event_id,group_id,user_id,display_name,message_date,message_hour)
             VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (eid,group,user,name,day,datetime.now(KST).hour))
+    # Count ordinary conversation only, once per 60 seconds, at most 10/day.
+    if text and not text.startswith(("*", "/", "!")) and len(text) >= 4:
+        with db() as conn:
+            conn.execute("""INSERT INTO daily_missions(group_id,user_id,mission_date,progress,last_counted_at)
+                VALUES(%s,%s,%s,1,NOW())
+                ON CONFLICT(group_id,user_id,mission_date) DO UPDATE
+                SET progress=daily_missions.progress+1,last_counted_at=NOW()
+                WHERE daily_missions.progress < 10
+                  AND (daily_missions.last_counted_at IS NULL
+                       OR daily_missions.last_counted_at <= NOW()-INTERVAL '60 seconds')""",
+                (group,user,day))
     with db() as conn:
         is_admin = user in ADMINS or conn.execute(
             "SELECT 1 FROM group_admins WHERE group_id=%s AND user_id=%s", (group,user)
@@ -541,7 +561,7 @@ def handle(event):
 *퀴즈 (관리자 출제·하루 20회) / *정답 1
 
 🏆 출석·포인트
-*출석 / *내포인트 / *출석랭킹
+*출석 / *내포인트 / *출석랭킹\n*오늘미션 / *미션보상 / *보물상자
 
 🛍️ 포인트 상점
 *상점 / *구매 왕관 / *인벤토리
@@ -599,6 +619,66 @@ def handle(event):
                 points = current[0] if current else 0
                 result = f"💸 포인트가 부족해!\n{emoji} {item}: {price:,}P\n현재 보유: {points:,}P"
         reply(token,result)
+        return
+    if text == "*오늘미션":
+        with db() as conn:
+            row = conn.execute("""SELECT progress,claimed FROM daily_missions
+                WHERE group_id=%s AND user_id=%s AND mission_date=%s""",
+                (group,user,day)).fetchone()
+        progress, claimed = row if row else (0,False)
+        reply(token, f"🎯 {name}님의 오늘 미션\\n일반 대화 10회 참여하기 ({progress}/10)\\n"
+              "※ 4글자 이상 일반 대화만 인정, 60초 간격으로 집계\\n"
+              + ("🎉 보상 수령 완료!" if claimed else
+                 "🎁 완료! *미션보상 입력해서 20P 받기" if progress >= 10 else
+                 "🏅 달성 보상: 20P\\n완료 후 *미션보상 입력"))
+        return
+    if text == "*미션보상":
+        with db() as conn:
+            claimed_row = conn.execute("""UPDATE daily_missions SET claimed=TRUE
+                WHERE group_id=%s AND user_id=%s AND mission_date=%s
+                AND progress >= 10 AND claimed=FALSE RETURNING progress""",
+                (group,user,day)).fetchone()
+            if claimed_row:
+                conn.execute("""INSERT INTO game_points(group_id,user_id,points)
+                    VALUES(%s,%s,20) ON CONFLICT(group_id,user_id)
+                    DO UPDATE SET points=game_points.points+20""",(group,user))
+            else:
+                status = conn.execute("""SELECT progress,claimed FROM daily_missions
+                    WHERE group_id=%s AND user_id=%s AND mission_date=%s""",
+                    (group,user,day)).fetchone()
+        reply(token, "🎉 오늘 미션 완료! +20P 지급했어!" if claimed_row else
+              "✅ 오늘 미션 보상은 이미 받았어." if status and status[1] else
+              f"🎯 아직 미션 진행 중이야! ({status[0] if status else 0}/10)")
+        return
+    if text == "*보물상자":
+        with db() as conn:
+            existing = conn.execute("""SELECT reward FROM daily_treasure
+                WHERE group_id=%s AND user_id=%s AND treasure_date=%s""",
+                (group,user,day)).fetchone()
+            if existing:
+                reward, fresh = existing[0], False
+            else:
+                # 1% jackpot; remaining prizes 0, 5, 10, 20, or 50 points.
+                roll = secrets.randbelow(100)
+                reward = 100 if roll == 0 else (50 if roll < 6 else
+                         20 if roll < 21 else 10 if roll < 51 else
+                         5 if roll < 81 else 0)
+                inserted = conn.execute("""INSERT INTO daily_treasure(group_id,user_id,treasure_date,reward)
+                    VALUES(%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING reward""",
+                    (group,user,day,reward)).fetchone()
+                fresh = bool(inserted)
+                if fresh:
+                    conn.execute("""INSERT INTO game_points(group_id,user_id,points)
+                        VALUES(%s,%s,%s) ON CONFLICT(group_id,user_id)
+                        DO UPDATE SET points=game_points.points+EXCLUDED.points""",
+                        (group,user,reward))
+                else:
+                    reward = conn.execute("""SELECT reward FROM daily_treasure
+                        WHERE group_id=%s AND user_id=%s AND treasure_date=%s""",
+                        (group,user,day)).fetchone()[0]
+        reply(token, (f"🎁 {name}님의 보물상자!\\n"
+              + (f"✨ {reward}P 획득!" if fresh else f"오늘은 이미 열었어! ({reward}P 획득 기록)")
+              + "\\n⏰ 내일 0시(한국 시간)에 다시 열 수 있어."))
         return
     if text == "*출석":
         from datetime import timedelta
