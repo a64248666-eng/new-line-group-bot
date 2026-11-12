@@ -46,6 +46,10 @@ def initialize():
             group_id TEXT NOT NULL, user_id TEXT NOT NULL,
             points INTEGER NOT NULL DEFAULT 0, attendance_days INTEGER NOT NULL DEFAULT 0,
             last_attendance TEXT, PRIMARY KEY(group_id,user_id))""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS quiz_daily_limits (
+            group_id TEXT NOT NULL, quiz_date TEXT NOT NULL,
+            issued_count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(group_id,quiz_date))""")
         conn.execute("""CREATE TABLE IF NOT EXISTS quiz_rounds (
             group_id TEXT PRIMARY KEY, question TEXT NOT NULL, answer TEXT NOT NULL,
             choices TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
@@ -429,7 +433,7 @@ def handle(event):
 🎲 게임·추첨
 *주사위 / *가위바위보
 *랜덤추첨 / *랜덤추첨 3
-*퀴즈 / *정답 1
+*퀴즈 (관리자 출제·하루 10회) / *정답 1
 
 🏆 출석·포인트
 *출석 / *내포인트 / *출석랭킹
@@ -539,16 +543,29 @@ def handle(event):
             reply(token, f"🍀 {name}님의 오늘 행운의 숫자: {lucky}\n※ 재미로 보는 숫자야.")
         return
     if text == "*퀴즈":
+        if user not in ADMINS:
+            reply(token, "⛔ 퀴즈 출제는 관리자만 가능해!\n정답 제출(*정답 1)은 모든 멤버가 할 수 있어.")
+            return
         question, choices, correct = secrets.choice(QUIZ_BANK)
         with db() as conn:
-            conn.execute("""INSERT INTO quiz_rounds(group_id,question,answer,choices,created_at)
-                VALUES(%s,%s,%s,%s,NOW())
-                ON CONFLICT(group_id) DO UPDATE SET question=EXCLUDED.question,
-                answer=EXCLUDED.answer,choices=EXCLUDED.choices,created_at=NOW()""",
-                (group,question,str(correct),"|".join(choices)))
-        reply(token, "🧠 레드봇 퀴즈!\n"+question+"\n"+
+            quota = conn.execute("""INSERT INTO quiz_daily_limits(group_id,quiz_date,issued_count)
+                VALUES(%s,%s,1)
+                ON CONFLICT(group_id,quiz_date) DO UPDATE
+                SET issued_count=quiz_daily_limits.issued_count+1
+                WHERE quiz_daily_limits.issued_count < 10
+                RETURNING issued_count""", (group,day)).fetchone()
+            if quota:
+                conn.execute("""INSERT INTO quiz_rounds(group_id,question,answer,choices,created_at)
+                    VALUES(%s,%s,%s,%s,NOW())
+                    ON CONFLICT(group_id) DO UPDATE SET question=EXCLUDED.question,
+                    answer=EXCLUDED.answer,choices=EXCLUDED.choices,created_at=NOW()""",
+                    (group,question,str(correct),"|".join(choices)))
+        if not quota:
+            reply(token, "🛑 오늘 퀴즈 10회 출제를 모두 사용했어!\n내일 오전 0시(한국 시간)에 다시 10회 출제할 수 있어.")
+            return
+        reply(token, "🧠 레드봇 퀴즈! ("+str(quota[0])+"/10회)\n"+question+"\n"+
               "\n".join(f"{i}. {choice}" for i,choice in enumerate(choices,1))+
-              "\n\n정답은 *정답 1 처럼 입력해 줘!\n⏳ 제한시간 10분 · 정답 +10P\n※ 새 퀴즈를 내면 이전 문제가 교체돼.")
+              "\n\n정답은 *정답 1 처럼 입력해 줘!\n⏳ 제한시간 10분 · 정답 +10P\n※ 관리자만 출제 가능 · 하루 10회 · 새 퀴즈는 이전 문제를 교체해.")
         return
     answer_match = re.fullmatch(r"\*정답\s+([1-4])",text)
     if answer_match:
