@@ -401,7 +401,7 @@ def handle(event):
                     DO UPDATE SET enabled=EXCLUDED.enabled""", (group,enabled))
             row = conn.execute("SELECT enabled FROM hourly_alert_settings WHERE group_id=%s",(group,)).fetchone()
         status = "켜짐 🔔" if row and row[0] else "꺼짐 🔕"
-        reply(token, f"⏰ 정각 알림: {status}\n한국 시간 기준 24시간 매 정각\n관리자 명령어: /정각알림켜기 · /정각알림끄기")
+        reply(token, f"⏰ 정각 알림: {status}\n한국 시간 기준 오전 8시~오후 11시 매 정각\n관리자 명령어: /정각알림켜기 · /정각알림끄기")
         return
     if text == "*출석":
         from datetime import timedelta
@@ -693,6 +693,8 @@ def hourly_alert():
         abort(403)
     initialize()
     now = datetime.now(KST)
+    if not 8 <= now.hour <= 23:
+        return {"status":"quiet_hours","sent":0}
     hour_key = now.strftime("%Y-%m-%d-%H")
     hour_label = f"{'오전' if now.hour < 12 else '오후'} {now.hour % 12 or 12}시"
     with db() as conn:
