@@ -33,6 +33,14 @@ def initialize():
         conn.execute("CREATE TABLE IF NOT EXISTS processed_events (event_id TEXT PRIMARY KEY,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())")
         conn.execute("CREATE TABLE IF NOT EXISTS region_members (group_id TEXT NOT NULL, region TEXT NOT NULL, member_name TEXT NOT NULL, PRIMARY KEY(group_id,region,member_name))")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_region_members_group_region ON region_members(group_id,region)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS game_points (
+            group_id TEXT NOT NULL, user_id TEXT NOT NULL,
+            points INTEGER NOT NULL DEFAULT 0, attendance_days INTEGER NOT NULL DEFAULT 0,
+            last_attendance TEXT, PRIMARY KEY(group_id,user_id))""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS quiz_rounds (
+            group_id TEXT PRIMARY KEY, question TEXT NOT NULL, answer TEXT NOT NULL,
+            choices TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
+
 
 def headers():
     return {"Authorization": "Bearer " + TOKEN, "Content-Type": "application/json"}
@@ -318,6 +326,46 @@ def ai(question):
     except (requests.RequestException, ValueError, IndexError, KeyError):
         return "AI 연결에 문제가 있어요."
 
+
+QUIZ_BANK = (
+    ("대한민국의 수도는?", ("서울", "부산", "대전", "광주"), 1),
+    ("태양계에서 가장 큰 행성은?", ("화성", "금성", "목성", "수성"), 3),
+    ("한글을 창제한 왕은?", ("세종대왕", "태조", "정조", "광해군"), 1),
+    ("물의 화학식은?", ("CO2", "O2", "H2O", "NaCl"), 3),
+    ("1시간은 몇 초일까?", ("600초", "3600초", "6000초", "360초"), 2),
+    ("지구의 자연 위성은?", ("달", "화성", "금성", "태양"), 1),
+    ("삼각형의 내각의 합은?", ("90도", "180도", "270도", "360도"), 2),
+    ("대한민국 국화는?", ("장미", "벚꽃", "무궁화", "해바라기"), 3),
+    ("빛의 삼원색에 포함되지 않는 것은?", ("빨강", "초록", "노랑", "파랑"), 3),
+    ("세계에서 가장 넓은 대양은?", ("대서양", "인도양", "북극해", "태평양"), 4),
+    ("사람의 심장은 일반적으로 몇 개의 방으로 이루어질까?", ("2개", "3개", "4개", "5개"), 3),
+    ("컴퓨터에서 CPU는 무엇을 뜻할까?", ("중앙처리장치", "주기억장치", "입력장치", "출력장치"), 1),
+    ("대한민국의 법정 화폐 단위는?", ("엔", "원", "달러", "위안"), 2),
+    ("지구가 태양을 한 바퀴 도는 데 걸리는 시간은 대략?", ("하루", "한 달", "일 년", "십 년"), 3),
+    ("피타고라스 정리가 적용되는 삼각형은?", ("정삼각형", "직각삼각형", "이등변삼각형만", "둔각삼각형만"), 2),
+)
+
+def game_stats(group, user):
+    with db() as conn:
+        return conn.execute(
+            "SELECT points,attendance_days,last_attendance FROM game_points WHERE group_id=%s AND user_id=%s",
+            (group,user)).fetchone()
+
+def daily_fortune(group, user, day):
+    import hashlib
+    digest = hashlib.sha256(f"{group}:{user}:{day}:redbot-fortune".encode()).digest()
+    fortunes = (
+        "작은 도전이 즐거운 결과로 이어질 수 있는 날이야! 🌱",
+        "주변 사람과의 대화에서 좋은 아이디어를 얻을 수 있어. 💬",
+        "서두르지 말고 차근차근 하면 만족스러운 하루가 될 거야. ✨",
+        "평소 미뤄둔 일을 하나 끝내 보면 뿌듯할 거야. 🎯",
+        "맛있는 음식과 잠깐의 휴식이 기분을 바꿔 줄 거야. 🍀",
+        "오늘은 새로운 취미나 재미있는 일을 시도해 봐! 🎨",
+        "가벼운 칭찬 한마디가 좋은 분위기를 만들 수 있어. 💖",
+        "집중력이 필요한 일부터 시작해 보면 좋겠어. 🚀",
+    )
+    return fortunes[digest[0] % len(fortunes)], digest[1] % 45 + 1
+
 def handle(event):
     source = event.get("source") or {}
     group, user = source.get("groupId"), source.get("userId")
@@ -336,6 +384,89 @@ def handle(event):
             ON CONFLICT(group_id,user_id) DO UPDATE SET display_name=EXCLUDED.display_name,updated_at=NOW()""", (group,user,name))
         conn.execute("""INSERT INTO message_events(event_id,group_id,user_id,display_name,message_date,message_hour)
             VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (eid,group,user,name,day,datetime.now(KST).hour))
+    if text == "*출석":
+        from datetime import timedelta
+        yesterday = (datetime.now(KST).date() - timedelta(days=1)).isoformat()
+        with db() as conn:
+            conn.execute("""INSERT INTO game_points(group_id,user_id) VALUES(%s,%s)
+                ON CONFLICT DO NOTHING""", (group,user))
+            row = conn.execute(
+                "SELECT points,attendance_days,last_attendance FROM game_points WHERE group_id=%s AND user_id=%s FOR UPDATE",
+                (group,user)).fetchone()
+            if row[2] == day:
+                result = f"✅ {name}님은 오늘 이미 출석했어!\n💰 현재 포인트: {row[0]:,}P"
+            else:
+                streak = 5 if row[2] == yesterday else 0
+                bonus = 10 + streak
+                conn.execute("""UPDATE game_points SET points=points+%s,
+                    attendance_days=attendance_days+1,last_attendance=%s
+                    WHERE group_id=%s AND user_id=%s""",
+                    (bonus,day,group,user))
+                result = (f"✅ {name}님 출석 완료!\n🎁 +{bonus}P"
+                          + (" (어제도 출석 보너스 +5P)" if streak else "")
+                          + f"\n📅 누적 출석: {row[1]+1}일\n💰 총 포인트: {row[0]+bonus:,}P")
+        reply(token,result)
+        return
+    if text == "*내포인트":
+        row = game_stats(group,user)
+        reply(token, f"💰 {name}님의 포인트\n🏅 {row[0] if row else 0:,}P\n📅 누적 출석: {row[1] if row else 0}일")
+        return
+    if text == "*출석랭킹":
+        with db() as conn:
+            rows = conn.execute("""SELECT p.user_id,p.points,p.attendance_days,
+                COALESCE(m.display_name,LEFT(p.user_id,12)) FROM game_points p
+                LEFT JOIN member_profiles m ON m.group_id=p.group_id AND m.user_id=p.user_id
+                WHERE p.group_id=%s ORDER BY p.points DESC,p.attendance_days DESC,p.user_id LIMIT 10""",
+                (group,)).fetchall()
+        result = "🏆 우리 방 포인트 TOP 10\n" + (
+            "\n".join(f"{i}. {display}: {points:,}P (출석 {days}일)"
+                      for i, (_,points,days,display) in enumerate(rows,1))
+            if rows else "아직 출석한 사람이 없어.")
+        reply(token,result)
+        return
+    if text in ("*오늘운세","*행운숫자"):
+        fortune, lucky = daily_fortune(group,user,day)
+        if text == "*오늘운세":
+            reply(token, f"🔮 {name}님의 오늘의 운세 ({day})\n{fortune}\n🍀 행운의 숫자: {lucky}\n※ 재미로 보는 랜덤 운세야.")
+        else:
+            reply(token, f"🍀 {name}님의 오늘 행운의 숫자: {lucky}\n※ 재미로 보는 숫자야.")
+        return
+    if text == "*퀴즈":
+        question, choices, correct = secrets.choice(QUIZ_BANK)
+        with db() as conn:
+            conn.execute("""INSERT INTO quiz_rounds(group_id,question,answer,choices,created_at)
+                VALUES(%s,%s,%s,%s,NOW())
+                ON CONFLICT(group_id) DO UPDATE SET question=EXCLUDED.question,
+                answer=EXCLUDED.answer,choices=EXCLUDED.choices,created_at=NOW()""",
+                (group,question,str(correct),"|".join(choices)))
+        reply(token, "🧠 레드봇 퀴즈!\n"+question+"\n"+
+              "\n".join(f"{i}. {choice}" for i,choice in enumerate(choices,1))+
+              "\n\n정답은 *정답 1 처럼 입력해 줘!\n⏳ 제한시간 10분 · 정답 +10P\n※ 새 퀴즈를 내면 이전 문제가 교체돼.")
+        return
+    answer_match = re.fullmatch(r"\*정답\s+([1-4])",text)
+    if answer_match:
+        with db() as conn:
+            row = conn.execute("""SELECT answer,created_at FROM quiz_rounds
+                WHERE group_id=%s FOR UPDATE""",(group,)).fetchone()
+            if not row:
+                result = "진행 중인 퀴즈가 없어. *퀴즈로 시작해 줘!"
+            else:
+                from datetime import timedelta
+                if datetime.now(KST) - row[1].astimezone(KST) > timedelta(minutes=10):
+                    conn.execute("DELETE FROM quiz_rounds WHERE group_id=%s",(group,))
+                    result = "⏳ 퀴즈 시간이 끝났어! *퀴즈로 새 문제를 시작해 줘."
+                elif answer_match.group(1) != row[0]:
+                    result = "❌ 아쉽지만 오답이야! 다시 도전해 봐."
+                else:
+                    conn.execute("DELETE FROM quiz_rounds WHERE group_id=%s",(group,))
+                    conn.execute("""INSERT INTO game_points(group_id,user_id,points)
+                        VALUES(%s,%s,10) ON CONFLICT(group_id,user_id)
+                        DO UPDATE SET points=game_points.points+10""",(group,user))
+                    points = conn.execute("SELECT points FROM game_points WHERE group_id=%s AND user_id=%s",
+                                          (group,user)).fetchone()[0]
+                    result = f"🎉 정답! {name}님 +10P 획득!\n💰 현재 포인트: {points:,}P"
+        reply(token,result)
+        return
     # Region roster: administrator-managed plain names, without LINE mentions.
     region_edit = re.fullmatch(r"/지역(추가|삭제)\s+([가-힣A-Za-z0-9]{2,20})\s+(.{1,60})", text)
     if region_edit:
