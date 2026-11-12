@@ -33,6 +33,10 @@ def initialize():
         conn.execute("CREATE TABLE IF NOT EXISTS processed_events (event_id TEXT PRIMARY KEY,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())")
         conn.execute("CREATE TABLE IF NOT EXISTS region_members (group_id TEXT NOT NULL, region TEXT NOT NULL, member_name TEXT NOT NULL, PRIMARY KEY(group_id,region,member_name))")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_region_members_group_region ON region_members(group_id,region)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS point_inventory (
+            group_id TEXT NOT NULL, user_id TEXT NOT NULL, item_name TEXT NOT NULL,
+            quantity INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(group_id,user_id,item_name))""")
         conn.execute("""CREATE TABLE IF NOT EXISTS hourly_alert_settings (
             group_id TEXT PRIMARY KEY, enabled BOOLEAN NOT NULL DEFAULT FALSE)""")
         conn.execute("""CREATE TABLE IF NOT EXISTS hourly_alert_deliveries (
@@ -402,6 +406,90 @@ def handle(event):
             row = conn.execute("SELECT enabled FROM hourly_alert_settings WHERE group_id=%s",(group,)).fetchone()
         status = "켜짐 🔔" if row and row[0] else "꺼짐 🔕"
         reply(token, f"⏰ 정각 알림: {status}\n한국 시간 기준 오전 8시~자정(00시) 매 정각\n관리자 명령어: /정각알림켜기 · /정각알림끄기")
+        return
+    if text in ("*도움말", "*명령어"):
+        reply(token, """🤖 RED BOT 3.0 전체 명령어
+
+📊 마딧수·통계
+*마딧수
+*YYMMDD마딧수 (예: *261113마딧수)
+*방통계
+
+👥 멤버 호출
+*남초 / *여초
+/남초추가 @멘션 /남초삭제 @멘션 /남초목록
+/여초추가 @멘션 /여초삭제 @멘션 /여초목록
+※ 남초·여초 명단 수정/조회는 관리자만
+
+🗺️ 지역 명단 (모든 멤버 수정 가능)
+/지역추가 서울 홍길동
+/지역삭제 서울 홍길동
+/서울 /부산 등 지역명 /지역목록
+
+🎲 게임·추첨
+*주사위 / *가위바위보
+*랜덤추첨 / *랜덤추첨 3
+*퀴즈 / *정답 1
+
+🏆 출석·포인트
+*출석 / *내포인트 / *출석랭킹
+
+🛍️ 포인트 상점
+*상점 / *구매 왕관 / *인벤토리
+
+🍜 메뉴 추천
+*점메추 / *저메추 / *메뉴추천
+
+🔮 운세
+*오늘운세 / *행운숫자
+
+🤖 AI·날씨
+!질문내용 (예: !내일 서울 날씨)
+
+⏰ 정각 알림
+/정각알림상태
+/정각알림켜기 /정각알림끄기 (관리자)
+※ 오전 8시~자정, 예약 실행 연결 전 자동 발송 안 됨
+
+📖 *도움말 / *명령어""")
+        return
+    shop = {"왕관": (100, "👑"), "별": (50, "⭐"), "하트": (30, "❤️"), "트로피": (150, "🏆"), "다이아": (300, "💎")}
+    if text == "*상점":
+        reply(token, "🛍️ 레드봇 포인트 상점\n"+
+              "\n".join(f"{emoji} {item}: {price:,}P" for item,(price,emoji) in shop.items())+
+              "\n\n구매: *구매 왕관\n보유 아이템: *인벤토리\n포인트 확인: *내포인트\n※ 가상 아이템이며 현금 가치가 없어.")
+        return
+    if text == "*인벤토리":
+        with db() as conn:
+            items = conn.execute("""SELECT item_name,quantity FROM point_inventory
+                WHERE group_id=%s AND user_id=%s AND quantity>0 ORDER BY item_name""",
+                (group,user)).fetchall()
+        reply(token, f"🎒 {name}님의 인벤토리\n"+
+              ("\n".join(f"{shop[item][1] if item in shop else '🎁'} {item} × {quantity}"
+                         for item,quantity in items) if items else "아직 구매한 아이템이 없어.\n*상점에서 구경해 봐!"))
+        return
+    if text.startswith("*구매"):
+        purchase = re.fullmatch(r"\*구매\s+([가-힣]{1,10})",text)
+        if not purchase or purchase.group(1) not in shop:
+            reply(token,"사용법: *구매 왕관\n판매 목록은 *상점에서 확인해 줘.")
+            return
+        item = purchase.group(1)
+        price, emoji = shop[item]
+        with db() as conn:
+            row = conn.execute("""UPDATE game_points SET points=points-%s
+                WHERE group_id=%s AND user_id=%s AND points >= %s
+                RETURNING points""",(price,group,user,price)).fetchone()
+            if row:
+                conn.execute("""INSERT INTO point_inventory(group_id,user_id,item_name,quantity)
+                    VALUES(%s,%s,%s,1) ON CONFLICT(group_id,user_id,item_name)
+                    DO UPDATE SET quantity=point_inventory.quantity+1""",(group,user,item))
+                result = f"🎉 {name}님 구매 성공!\n{emoji} {item} × 1\n💰 남은 포인트: {row[0]:,}P"
+            else:
+                current = conn.execute("SELECT points FROM game_points WHERE group_id=%s AND user_id=%s",
+                                       (group,user)).fetchone()
+                points = current[0] if current else 0
+                result = f"💸 포인트가 부족해!\n{emoji} {item}: {price:,}P\n현재 보유: {points:,}P"
+        reply(token,result)
         return
     if text == "*출석":
         from datetime import timedelta
