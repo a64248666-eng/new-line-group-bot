@@ -30,6 +30,8 @@ def initialize():
         conn.execute("CREATE TABLE IF NOT EXISTS member_profiles (group_id TEXT NOT NULL,user_id TEXT NOT NULL,display_name TEXT NOT NULL,updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),PRIMARY KEY(group_id,user_id))")
         conn.execute("CREATE TABLE IF NOT EXISTS mention_members (group_id TEXT NOT NULL,category TEXT NOT NULL,user_id TEXT NOT NULL,PRIMARY KEY(group_id,category,user_id))")
         conn.execute("CREATE TABLE IF NOT EXISTS processed_events (event_id TEXT PRIMARY KEY,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())")
+        conn.execute("CREATE TABLE IF NOT EXISTS region_members (group_id TEXT NOT NULL, region TEXT NOT NULL, member_name TEXT NOT NULL, PRIMARY KEY(group_id,region,member_name))")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_region_members_group_region ON region_members(group_id,region)")
 
 def headers():
     return {"Authorization": "Bearer " + TOKEN, "Content-Type": "application/json"}
@@ -333,6 +335,76 @@ def handle(event):
             ON CONFLICT(group_id,user_id) DO UPDATE SET display_name=EXCLUDED.display_name,updated_at=NOW()""", (group,user,name))
         conn.execute("""INSERT INTO message_events(event_id,group_id,user_id,display_name,message_date)
             VALUES(%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (eid,group,user,name,day))
+    # Region roster: administrator-managed plain names, without LINE mentions.
+    region_edit = re.fullmatch(r"/지역(추가|삭제)\s+([가-힣A-Za-z0-9]{2,20})\s+(.{1,60})", text)
+    if region_edit:
+        action, region, member_name = region_edit.groups()
+        member_name = member_name.strip()
+        if user not in ADMINS:
+            reply(token, "지역 명단 등록·삭제는 관리자만 할 수 있어.")
+            return
+        if not member_name or "\n" in member_name or "\r" in member_name:
+            reply(token, "사용법: /지역추가 서울 홍길동 또는 /지역삭제 서울 홍길동")
+            return
+        with db() as conn:
+            if action == "추가":
+                changed = conn.execute(
+                    "INSERT INTO region_members(group_id,region,member_name) VALUES(%s,%s,%s) ON CONFLICT DO NOTHING RETURNING member_name",
+                    (group,region,member_name)).fetchone()
+            else:
+                changed = conn.execute(
+                    "DELETE FROM region_members WHERE group_id=%s AND region=%s AND member_name=%s RETURNING member_name",
+                    (group,region,member_name)).fetchone()
+        if action == "추가":
+            reply(token, f"📍 {region} 명단에 {member_name} 등록 완료!" if changed else f"{member_name}님은 이미 {region} 명단에 있어.")
+        else:
+            reply(token, f"🗑️ {region} 명단에서 {member_name} 삭제 완료!" if changed else f"{region} 명단에서 {member_name}님을 찾지 못했어.")
+        return
+    if text.startswith("/지역추가") or text.startswith("/지역삭제"):
+        reply(token, "사용법: /지역추가 서울 홍길동\n삭제: /지역삭제 서울 홍길동")
+        return
+    if text == "/지역목록":
+        with db() as conn:
+            regions = conn.execute(
+                "SELECT region,COUNT(*) FROM region_members WHERE group_id=%s GROUP BY region ORDER BY region",
+                (group,)).fetchall()
+        if not regions:
+            reply(token, "📍 등록된 지역이 아직 없어.\n관리자가 /지역추가 서울 홍길동 으로 등록할 수 있어.")
+        else:
+            lines = [f"📍 지역별 등록 현황 ({len(regions)}개 지역)"]
+            for region, count in regions:
+                line = f"• {region}: {count}명"
+                if sum(len(x) + 1 for x in lines) + len(line) > 4700:
+                    lines.append("…이하 생략")
+                    break
+                lines.append(line)
+            reply(token, "\n".join(lines))
+        return
+    region_query = re.fullmatch(r"/([가-힣A-Za-z0-9]{2,20})", text)
+    if region_query:
+        region = region_query.group(1)
+        with db() as conn:
+            members = conn.execute(
+                "SELECT member_name FROM region_members WHERE group_id=%s AND region=%s ORDER BY member_name",
+                (group,region)).fetchall()
+        if members:
+            lines = [f"📍 {region} 거주자 명단 ({len(members)}명)"]
+            for i, (member_name,) in enumerate(members, 1):
+                line = f"{i}. {member_name}"
+                if sum(len(x) + 1 for x in lines) + len(line) > 4700:
+                    lines.append("…이하 생략")
+                    break
+                lines.append(line)
+            reply(token, "\n".join(lines))
+            return
+        # Avoid interfering with existing commands; only recognize known regions.
+        with db() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM region_members WHERE group_id=%s AND region=%s LIMIT 1",
+                (group,region)).fetchone()
+        if exists:
+            reply(token, f"{region} 명단이 비어 있어.")
+            return
     if text == "*주사위":
         reply(token, f"🎲 주사위 결과: {secrets.randbelow(6) + 1}!")
         return
