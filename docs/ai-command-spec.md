@@ -7,7 +7,12 @@
 - 기존 `*남초`, `*여초`, `*마딧수`, `*YYMMDD마딧수` 명령과 충돌하지 않는다.
 
 ## 모델 선택
+- 기본 공급자는 Gemini로 고정한다 (`AI_PROVIDER=gemini`).
+- 기본 모델은 무료 등급 지원 `gemini-2.5-flash`로 지정하고, 실제 프로젝트에서 무료 제공 여부를 확인한다.
 - 기존 코드의 `GEMINI_API_KEY`, `GEMINI_MODEL`을 우선 재사용한다.
+- Google AI Studio의 Free Tier 프로젝트 API 키를 사용하고 유료 Billing Tier 업그레이드는 하지 않는다.
+- 429 등 무료 할당량 초과 시 AI 답변 대신 안내하고 유료 모델로 자동 전환하지 않는다.
+- 무료 등급의 입력은 Google 제품 개선에 사용될 수 있으므로 개인정보나 민감한 그룹 대화 전송을 최소화한다.
 - 향후 `AI_PROVIDER=gemini|openai` 선택과 `OPENAI_API_KEY`, `OPENAI_MODEL`을 추가할 수 있도록 구성한다.
 - API 키는 Render 환경변수에만 저장하고 저장소에는 커밋하지 않는다.
 
