@@ -283,12 +283,17 @@ def ai(question):
     payload = {
         "systemInstruction": {"parts": [{"text": f"현재 기준 시간은 대한민국 서울(Asia/Seoul) {today_text} {now.hour:02d}시 {now.minute:02d}분입니다. 오늘 날짜와 현재 시간에 관한 질문에는 이 정보를 정확히 사용하세요. 한국어로 핵심만 정확하고 간결하게 답변하세요. 간단한 질문에는 1~3문장으로 답하세요. 질문의 국가·인물·날짜·단위를 정확히 구분하고, 질문이 모호하면 필요한 조건을 짧게 확인하세요. 확인되지 않은 수치·날짜·인용·출처를 만들어내지 마세요. 검색 결과가 충돌하면 최신성과 공신력을 비교하고, 확인된 사실과 불확실한 내용을 구분하세요. 검색 근거가 있는 최신 사실은 확인된 정보만 답하고, 가능하면 출처의 사이트명과 링크를 제시하세요. 실시간 검색이 필요한 최신 사실을 확인하지 못했다면 추측하지 마세요."}]},
         "contents": [{"parts": [{"text": question[:2000]}]}],
-        "generationConfig": {"maxOutputTokens": 400, "thinkingConfig": {"thinkingBudget": 0}}
+        "generationConfig": {"maxOutputTokens": 1600}
     }
     if needs_live:
         payload["tools"] = [{"google_search": {}}]
         payload["generationConfig"].pop("thinkingConfig", None)
     def generate(model):
+        # Enable modest reasoning for Gemini 2.5 Flash; leave newer models on their defaults.
+        if model.startswith("gemini-2.5-flash") and "lite" not in model:
+            payload["generationConfig"]["thinkingConfig"] = {"thinkingBudget": 512}
+        else:
+            payload["generationConfig"].pop("thinkingConfig", None)
         response = None
         for attempt in range(3):
             try:
@@ -318,7 +323,7 @@ def ai(question):
                 flash = [m for m in models if "flash" in m.lower() and "image" not in m.lower()
                          and "tts" not in m.lower() and "live" not in m.lower()]
                 alternatives = flash or models
-                alternatives.sort(key=lambda m: ("preview" in m.lower(), "lite" not in m.lower(), m))
+                alternatives.sort(key=lambda m: ("preview" in m.lower(), "lite" in m.lower(), m))
                 for candidate in alternatives[:12]:
                     if candidate == model: continue
                     r = generate(candidate)
