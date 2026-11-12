@@ -401,23 +401,30 @@ def handle(event):
         if user not in ADMINS:
             reply(token, "⛔ 포인트 지급은 관리자만 가능해.")
             return
-        if text == "/포인트추가":
-            targets = [user]
-        else:
-            targets = list(dict.fromkeys(
-                m["userId"] for m in (message.get("mention") or {}).get("mentionees", [])
-                if m.get("userId")
-            ))
-            if not targets:
-                reply(token, "사용법: /포인트추가 (관리자 본인) 또는 /포인트추가 @멤버")
+        amount_match = re.fullmatch(r"/포인트추가\s+([0-9]{1,7})(?:\s+.*)?", text)
+        if not amount_match:
+            reply(token, "사용법: /포인트추가 500 (본인) 또는 /포인트추가 500 @멤버\n※ 1~1,000,000P까지 지급 가능")
+            return
+        amount = int(amount_match.group(1))
+        if not 1 <= amount <= 1000000:
+            reply(token, "⛔ 지급 금액은 1~1,000,000P 사이로 입력해 줘.")
+            return
+        targets = list(dict.fromkeys(
+            m["userId"] for m in (message.get("mention") or {}).get("mentionees", [])
+            if m.get("userId")
+        ))
+        if not targets:
+            if text != f"/포인트추가 {amount_match.group(1)}":
+                reply(token, "멘션 대상이 확인되지 않아. LINE에서 실제 멤버를 멘션하거나, 본인 지급은 /포인트추가 500처럼 입력해 줘.")
                 return
+            targets = [user]
         with db() as conn:
             for target in targets:
                 conn.execute("""INSERT INTO game_points(group_id,user_id,points)
-                    VALUES(%s,%s,2000)
+                    VALUES(%s,%s,%s)
                     ON CONFLICT(group_id,user_id)
-                    DO UPDATE SET points=game_points.points+2000""", (group,target))
-        reply(token, f"🎁 관리자 포인트 지급 완료!\\n대상: {len(targets)}명\\n1명당 +2,000P")
+                    DO UPDATE SET points=game_points.points+EXCLUDED.points""", (group,target,amount))
+        reply(token, f"🎁 관리자 포인트 지급 완료!\n대상: {len(targets)}명\n1명당 +{amount:,}P")
         return
     if text in ("/정각알림켜기", "/정각알림끄기", "/정각알림상태"):
         if text != "/정각알림상태" and user not in ADMINS:
