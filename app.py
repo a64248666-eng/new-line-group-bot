@@ -95,24 +95,99 @@ def reply_message(token, message):
 
 _working_gemini_model = None
 
+WEATHER_CITIES = {
+    "서울": (37.5665, 126.9780), "부산": (35.1796, 129.0756),
+    "대구": (35.8714, 128.6014), "인천": (37.4563, 126.7052),
+    "광주": (35.1595, 126.8526), "대전": (36.3504, 127.3845),
+    "울산": (35.5384, 129.3114), "세종": (36.4800, 127.2890),
+    "제주": (33.4996, 126.5312), "서귀포": (33.2541, 126.5601),
+    "수원": (37.2636, 127.0286), "성남": (37.4200, 127.1265),
+    "고양": (37.6584, 126.8320), "용인": (37.2411, 127.1776),
+    "부천": (37.5034, 126.7660), "안양": (37.3943, 126.9568),
+    "안산": (37.3219, 126.8309), "화성": (37.1995, 126.8312),
+    "평택": (36.9921, 127.1129), "파주": (37.7600, 126.7800),
+    "김포": (37.6152, 126.7156), "의정부": (37.7381, 127.0337),
+    "남양주": (37.6360, 127.2165), "하남": (37.5393, 127.2149),
+    "광명": (37.4786, 126.8644), "시흥": (37.3800, 126.8030),
+    "군포": (37.3617, 126.9352), "이천": (37.2720, 127.4350),
+    "여주": (37.2982, 127.6372), "양평": (37.4918, 127.4876),
+    "춘천": (37.8813, 127.7298), "원주": (37.3422, 127.9202),
+    "강릉": (37.7519, 128.8761), "속초": (38.2070, 128.5918),
+    "동해": (37.5247, 129.1143), "삼척": (37.4499, 129.1652),
+    "태백": (37.1641, 128.9856), "청주": (36.6424, 127.4890),
+    "충주": (36.9910, 127.9259), "제천": (37.1326, 128.1910),
+    "천안": (36.8151, 127.1139), "아산": (36.7898, 127.0018),
+    "공주": (36.4465, 127.1190), "보령": (36.3333, 126.6129),
+    "서산": (36.7845, 126.4503), "당진": (36.8936, 126.6283),
+    "논산": (36.1872, 127.0987), "전주": (35.8242, 127.1480),
+    "군산": (35.9677, 126.7366), "익산": (35.9483, 126.9576),
+    "정읍": (35.5699, 126.8560), "남원": (35.4164, 127.3904),
+    "목포": (34.8118, 126.3922), "여수": (34.7604, 127.6622),
+    "순천": (34.9506, 127.4872), "광양": (34.9407, 127.6959),
+    "나주": (35.0158, 126.7108), "포항": (36.0190, 129.3435),
+    "경주": (35.8562, 129.2247), "구미": (36.1195, 128.3446),
+    "김천": (36.1398, 128.1136), "안동": (36.5684, 128.7294),
+    "영주": (36.8057, 128.6240), "경산": (35.8251, 128.7415),
+    "창원": (35.2281, 128.6811), "김해": (35.2285, 128.8894),
+    "진주": (35.1800, 128.1076), "양산": (35.3350, 129.0373),
+    "거제": (34.8806, 128.6211), "통영": (34.8544, 128.4332),
+    "사천": (35.0038, 128.0642), "밀양": (35.5038, 128.7466),
+}
+WEATHER_ALIASES = {"제주도": "제주", "서울특별시": "서울", "부산광역시": "부산",
+    "대구광역시": "대구", "인천광역시": "인천", "광주광역시": "광주",
+    "대전광역시": "대전", "울산광역시": "울산", "세종시": "세종",
+    "제주시": "제주", "서귀포시": "서귀포"}
+
 def weather_forecast(question, now):
-    """Get Seoul forecast directly instead of trusting stale model knowledge."""
-    normalized = re.sub(r"\s+", "", question)
-    if "날씨" not in normalized and "기온" not in normalized and "비와" not in normalized:
+    """Live daily forecast for explicitly named locations in South Korea."""
+    compact = re.sub(r"\s+", "", question)
+    if not any(word in compact for word in ("날씨", "기온", "강수확률", "비올", "비와")):
         return None
-    if "서울" not in normalized:
-        return None
-    if "모레" in normalized:
+    if "모레" in compact:
         offset, day_label = 2, "모레"
-    elif "내일" in normalized:
+    elif "내일" in compact:
         offset, day_label = 1, "내일"
-    elif "오늘" in normalized or "지금" in normalized or "현재" in normalized:
+    elif any(word in compact for word in ("오늘", "지금", "현재")):
         offset, day_label = 0, "오늘"
     else:
         return None
+
+    # Prefer the longest recognized city name to avoid partial matches.
+    place = next((name for name in sorted(
+        set(WEATHER_CITIES) | set(WEATHER_ALIASES), key=len, reverse=True)
+        if name in compact), None)
+    if place:
+        place = WEATHER_ALIASES.get(place, place)
+        lat, lon = WEATHER_CITIES[place]
+    else:
+        # Extract the locality immediately preceding the weather keyword.
+        match = re.search(r"([가-힣]{2,12})(?:의|에|에서)?(?:날씨|기온|강수확률|비올|비와)", compact)
+        if not match:
+            return "지역명을 함께 알려줘. 예: !내일 부산 날씨"
+        place = re.sub(r"^(오늘|내일|모레|지금|현재)", "", match.group(1))
+        place = re.sub(r"(특별시|광역시|특별자치시|특별자치도|자치시|자치도|시|군|구)$", "", place)
+        if len(place) < 2:
+            return "지역명을 확인하지 못했어. 예: !내일 강릉 날씨"
+        try:
+            geo = requests.get("https://geocoding-api.open-meteo.com/v1/search",
+                params={"name": place, "count": 10, "language": "ko", "countryCode": "KR"},
+                timeout=7)
+            geo.raise_for_status()
+            results = [x for x in geo.json().get("results", [])
+                       if x.get("country_code") == "KR"]
+            exact = [x for x in results if x.get("name", "").replace(" ", "") == place]
+            selected = (exact or results)
+            if not selected:
+                return f"'{place}' 지역을 찾지 못했어. 시·군·구 이름으로 다시 물어봐 줘."
+            item = selected[0]
+            lat, lon = item["latitude"], item["longitude"]
+            place = item.get("name") or place
+        except (requests.RequestException, ValueError, KeyError, TypeError):
+            return "지역 검색 서비스에 연결하지 못했어. 잠시 후 다시 시도해 줘."
+
     try:
         response = requests.get("https://api.open-meteo.com/v1/forecast", params={
-            "latitude": 37.5665, "longitude": 126.9780,
+            "latitude": lat, "longitude": lon,
             "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
             "timezone": "Asia/Seoul", "forecast_days": 4
         }, timeout=8)
@@ -142,14 +217,15 @@ def weather_forecast(question, now):
         low = daily["temperature_2m_min"][index]
         high = daily["temperature_2m_max"][index]
         rain = daily["precipitation_probability_max"][index]
-        return (f"🌤️ {day_label} 서울 날씨 ({expected})\n"
+        return (f"🌤️ {day_label} {place} 날씨 ({expected})\n"
                 f"날씨: {condition}\n"
                 f"최저 {low:g}°C / 최고 {high:g}°C\n"
                 f"강수확률: {rain}%\n"
                 "출처: Open-Meteo 기상예보 (예보는 바뀔 수 있어요)")
     except (requests.RequestException, ValueError, KeyError, IndexError, TypeError) as exc:
         app.logger.warning("Weather forecast lookup failed: %s", type(exc).__name__)
-        return "서울 날씨 예보를 지금 조회하지 못했어요. 잠시 후 다시 시도해 주세요."
+        return f"{place} 날씨 예보를 지금 조회하지 못했어. 잠시 후 다시 시도해 줘."
+
 
 def ai(question):
     global _working_gemini_model
