@@ -13,8 +13,9 @@ TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
 DB = (os.getenv("DATABASE_URL") or os.getenv("REDBOT_DATABASE_URL") or "").strip()
 app.logger.warning("Configuration check: DATABASE_URL_present=%s LINE_SECRET_present=%s LINE_TOKEN_present=%s", bool(DB), bool(os.getenv("LINE_CHANNEL_SECRET")), bool(os.getenv("LINE_CHANNEL_ACCESS_TOKEN")))
 ADMINS = {s.strip() for s in os.getenv("ADMIN_USER_IDS", "").split(",") if s.strip()}
-GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+OPENAI_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini").strip()
+OPENAI_WEB_SEARCH = os.getenv("OPENAI_WEB_SEARCH", "false").lower() in ("1", "true", "yes", "on")
 API = "https://api.line.me/v2/bot"
 _ready = False
 _lock = Lock()
@@ -118,7 +119,6 @@ def reply_message(token, message):
         app.logger.warning("LINE reply status %s: %s", r.status_code, r.text[:500])
     r.raise_for_status()
 
-_working_gemini_model = None
 
 WEATHER_CITIES = {
     "서울": (37.5665, 126.9780), "부산": (35.1796, 129.0756),
@@ -253,7 +253,6 @@ def weather_forecast(question, now):
 
 
 def ai(question):
-    global _working_gemini_model
     now = datetime.now(KST)
     normalized = re.sub(r"\s+", "", question).rstrip("?!？!。.")
     forecast = weather_forecast(question, now)
@@ -271,83 +270,67 @@ def ai(question):
     if (any(word in normalized for word in ("지금", "현재", "한국시간"))
             and any(word in normalized for word in ("몇시", "시간", "몇분"))):
         return f"현재 한국 시간은 {now.hour:02d}시 {now.minute:02d}분이에요. 🇰🇷"
-    if not GEMINI_KEY: return "관리자에게 GEMINI_API_KEY 설정을 요청해 주세요."
-    # Ground factual lookup questions in web search; avoid unverified model recall.
-    current_terms = ("현재", "지금", "오늘", "최신", "요즘", "이번", "누구", "누가", "대통령", "총리", "장관", "환율", "주가", "날씨", "뉴스", "당선", "취임", "순위", "가격", "현직", "언제", "어디", "얼마", "몇", "발표", "결과", "통계", "사실", "출처", "근거")
-    fresh_topics = ("대통령", "총리", "장관", "정부", "정치", "환율", "주가", "날씨", "뉴스", "선거", "당선", "취임", "현직", "대표", "시장", "가격", "경기", "순위", "출시", "업데이트", "법률", "정책", "인구", "통계", "사건", "사고", "연예", "스포츠", "주식", "코인", "금리", "부동산")
+    if not OPENAI_KEY:
+        return "GPT 연결 준비 중이에요. 관리자에게 Render의 OPENAI_API_KEY 설정을 요청해 주세요."
+    normalized = re.sub(r"\s+", "", question)
+    current_terms = ("현재", "지금", "오늘", "최신", "요즘", "이번", "누구", "누가", "환율", "주가", "뉴스", "가격", "순위", "언제", "결과", "통계")
+    fresh_topics = ("대통령", "총리", "장관", "정부", "정치", "환율", "주가", "뉴스", "선거", "당선", "취임", "현직", "대표", "시장", "가격", "경기", "순위", "출시", "업데이트", "법률", "정책", "인구", "통계", "사건", "사고", "연예", "스포츠", "주식", "코인", "금리", "부동산")
     needs_live = (any(t in normalized for t in fresh_topics)
                   or (any(t in normalized for t in current_terms)
-                      and not any(t in normalized for t in ("소설", "시를", "농담", "이야기만들", "번역", "맞춤법"))))
-    base = "https://generativelanguage.googleapis.com/v1beta"
+                      and not any(t in normalized for t in ("소설", "시를", "농담", "번역", "맞춤법"))))
+    instructions = (
+        f"현재 기준 시간은 대한민국 서울(Asia/Seoul) {today_text} {now.hour:02d}시 {now.minute:02d}분입니다. "
+        "한국어로 정확하고 간결하게 답변하세요. 간단한 질문은 1~3문장으로 답하세요. "
+        "불확실한 수치, 날짜, 출처를 만들어내지 말고 모르는 것은 모른다고 답하세요. "
+        "검색 도구를 사용한 경우 근거에 기반해 답하고, 정보의 기준 시점을 명확히 밝히세요."
+    )
+    if needs_live and not OPENAI_WEB_SEARCH:
+        return ("이 질문은 최신 정보 확인이 필요해요. 현재 GPT 웹 검색이 꺼져 있어 "
+                "실시간 사실을 검증할 수 없어요. 관리자에게 OPENAI_WEB_SEARCH 설정을 요청해 주세요.")
     payload = {
-        "systemInstruction": {"parts": [{"text": f"현재 기준 시간은 대한민국 서울(Asia/Seoul) {today_text} {now.hour:02d}시 {now.minute:02d}분입니다. 오늘 날짜와 현재 시간에 관한 질문에는 이 정보를 정확히 사용하세요. 한국어로 핵심만 정확하고 간결하게 답변하세요. 간단한 질문에는 1~3문장으로 답하세요. 질문의 국가·인물·날짜·단위를 정확히 구분하고, 질문이 모호하면 필요한 조건을 짧게 확인하세요. 확인되지 않은 수치·날짜·인용·출처를 만들어내지 마세요. 검색 결과가 충돌하면 최신성과 공신력을 비교하고, 확인된 사실과 불확실한 내용을 구분하세요. 검색 근거가 있는 최신 사실은 확인된 정보만 답하고, 가능하면 출처의 사이트명과 링크를 제시하세요. 실시간 검색이 필요한 최신 사실을 확인하지 못했다면 추측하지 마세요."}]},
-        "contents": [{"parts": [{"text": question[:2000]}]}],
-        "generationConfig": {"maxOutputTokens": 400, "thinkingConfig": {"thinkingBudget": 0}}
+        "model": OPENAI_MODEL,
+        "instructions": instructions,
+        "input": question[:2000],
+        "max_output_tokens": 650,
+        "store": False
     }
-    if needs_live:
-        payload["tools"] = [{"google_search": {}}]
-        payload["generationConfig"].pop("thinkingConfig", None)
-    def generate(model):
-        return requests.post(f"{base}/models/{model}:generateContent",
-            headers={"x-goog-api-key": GEMINI_KEY}, json=payload, timeout=18)
+    if needs_live and OPENAI_WEB_SEARCH:
+        payload["tools"] = [{"type": "web_search"}]
+        payload["tool_choice"] = "required"
     try:
-        model = _working_gemini_model or GEMINI_MODEL
-        r = generate(model)
-        if r.status_code == 400 and "thinking" in r.text.lower():
-            payload["generationConfig"].pop("thinkingConfig", None)
-            r = generate(model)
-        if r.status_code == 404:
-            listing = requests.get(f"{base}/models", headers={"x-goog-api-key": GEMINI_KEY}, timeout=10)
-            if listing.ok:
-                models = [m.get("name", "").removeprefix("models/") for m in listing.json().get("models", [])
-                          if "generateContent" in m.get("supportedGenerationMethods", [])]
-                flash = [m for m in models if "flash" in m.lower() and "image" not in m.lower()
-                         and "tts" not in m.lower() and "live" not in m.lower()]
-                alternatives = flash or models
-                alternatives.sort(key=lambda m: (0 if "flash-lite" in m.lower() else 1,
-                                                   "preview" in m.lower(), m))
-                for candidate in alternatives[:8]:
-                    if candidate == model: continue
-                    r = generate(candidate)
-                    if r.status_code == 400 and "thinking" in r.text.lower():
-                        payload["generationConfig"].pop("thinkingConfig", None)
-                        r = generate(candidate)
-                    if r.status_code != 404:
-                        model = candidate
-                        break
-            else:
-                app.logger.warning("Gemini model listing status %s", listing.status_code)
-        if needs_live and not r.ok:
-            app.logger.warning("Gemini grounded search status %s", r.status_code)
-            return "최신 정보를 실시간으로 확인하지 못했어요. 정확하지 않은 정보를 알려드리지 않기 위해 답변을 보류할게요."
-        if r.status_code == 429: return "AI 무료 사용량 한도에 도달했어요. 나중에 다시 시도해 주세요."
-        if not r.ok:
-            app.logger.warning("Gemini status %s", r.status_code)
-            return "AI 답변을 불러올 수 없어요."
-        if needs_live:
-            candidates = r.json().get("candidates", [])
-            metadata = candidates[0].get("groundingMetadata", {}) if candidates else {}
-            if not metadata.get("groundingChunks"):
-                return "최신 정보를 확인할 근거가 부족해요. 정확하지 않은 답변 대신 확인이 필요하다고 알려드릴게요."
-        _working_gemini_model = model
-        parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
-        answer = "".join(p.get("text", "") for p in parts).strip() or "AI 답변이 비어 있어요."
-        if needs_live:
-            metadata = r.json().get("candidates", [{}])[0].get("groundingMetadata", {})
-            sources = []
-            for chunk in metadata.get("groundingChunks", []):
-                web = chunk.get("web") or {}
-                uri = web.get("uri", "")
-                title = web.get("title", "출처")
-                if uri.startswith("https://") and uri not in [u for _, u in sources]:
-                    sources.append((title[:55], uri))
-                if len(sources) >= 2:
-                    break
-            if sources:
-                answer += "\n\n🔎 확인한 출처:\n" + "\n".join(f"• {title}: {uri}" for title, uri in sources)
-        return answer[:4800]
-    except (requests.RequestException, ValueError, IndexError, KeyError):
-        return "AI 연결에 문제가 있어요."
+        response = requests.post("https://api.openai.com/v1/responses",
+            headers={"Authorization": "Bearer " + OPENAI_KEY, "Content-Type": "application/json"},
+            json=payload, timeout=35)
+        if response.status_code == 401:
+            return "GPT API 키가 유효하지 않아요. Render의 OPENAI_API_KEY를 확인해 주세요."
+        if response.status_code == 429:
+            return "GPT API 사용량 또는 요청 한도에 도달했어요. 잠시 후 다시 시도해 주세요."
+        if not response.ok:
+            app.logger.warning("OpenAI Responses API status %s", response.status_code)
+            return "GPT 답변을 불러올 수 없어요. API 모델·사용 권한·결제 설정을 확인해 주세요."
+        data = response.json()
+        chunks = []
+        citations = []
+        for item in data.get("output", []):
+            if item.get("type") != "message":
+                continue
+            for content in item.get("content", []):
+                if content.get("type") != "output_text":
+                    continue
+                chunks.append(content.get("text", ""))
+                for annotation in content.get("annotations", []):
+                    if annotation.get("type") == "url_citation":
+                        url = annotation.get("url", "")
+                        if url.startswith("https://") and url not in citations:
+                            citations.append(url)
+        answer = "".join(chunks).strip()
+        if needs_live and not citations:
+            return "검색 결과에서 확인 가능한 출처가 부족해요. 최신 정보는 검증 후 다시 질문해 주세요."
+        if citations:
+            answer += "\n\n🔎 출처:\n" + "\n".join(citations[:2])
+        return (answer or "GPT 답변이 비어 있어요.")[:4800]
+    except (requests.RequestException, ValueError, TypeError, KeyError):
+        return "GPT 연결에 문제가 있어요. 잠시 후 다시 시도해 주세요."
 
 
 QUIZ_BANK = (
@@ -524,7 +507,7 @@ def handle(event):
 🔮 운세
 *오늘운세 / *행운숫자
 
-🤖 AI·날씨
+🤖 GPT AI·날씨
 !질문내용 (예: !내일 서울 날씨)
 
 ⏰ 정각 알림
