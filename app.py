@@ -95,10 +95,69 @@ def reply_message(token, message):
 
 _working_gemini_model = None
 
+def weather_forecast(question, now):
+    """Get Seoul forecast directly instead of trusting stale model knowledge."""
+    normalized = re.sub(r"\\s+", "", question)
+    if "날씨" not in normalized and "기온" not in normalized and "비와" not in normalized:
+        return None
+    if "서울" not in normalized:
+        return None
+    if "모레" in normalized:
+        offset, day_label = 2, "모레"
+    elif "내일" in normalized:
+        offset, day_label = 1, "내일"
+    elif "오늘" in normalized or "지금" in normalized or "현재" in normalized:
+        offset, day_label = 0, "오늘"
+    else:
+        return None
+    try:
+        response = requests.get("https://api.open-meteo.com/v1/forecast", params={
+            "latitude": 37.5665, "longitude": 126.9780,
+            "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+            "timezone": "Asia/Seoul", "forecast_days": 4
+        }, timeout=8)
+        response.raise_for_status()
+        daily = response.json()["daily"]
+        expected = (now.date() + __import__("datetime").timedelta(days=offset)).isoformat()
+        index = daily["time"].index(expected)
+        code = daily["weather_code"][index]
+        if code == 0:
+            condition = "맑음"
+        elif code in (1, 2):
+            condition = "대체로 맑음 또는 구름 조금"
+        elif code == 3:
+            condition = "흐림"
+        elif code in (45, 48):
+            condition = "안개"
+        elif code in (51, 53, 55, 56, 57):
+            condition = "이슬비"
+        elif code in (61, 63, 65, 66, 67, 80, 81, 82):
+            condition = "비"
+        elif code in (71, 73, 75, 77, 85, 86):
+            condition = "눈"
+        elif code in (95, 96, 99):
+            condition = "천둥번개"
+        else:
+            condition = "변동 가능"
+        low = daily["temperature_2m_min"][index]
+        high = daily["temperature_2m_max"][index]
+        rain = daily["precipitation_probability_max"][index]
+        return (f"🌤️ {day_label} 서울 날씨 ({expected})\\n"
+                f"날씨: {condition}\\n"
+                f"최저 {low:g}°C / 최고 {high:g}°C\\n"
+                f"강수확률: {rain}%\\n"
+                "출처: Open-Meteo 기상예보 (예보는 바뀔 수 있어요)")
+    except (requests.RequestException, ValueError, KeyError, IndexError, TypeError) as exc:
+        app.logger.warning("Weather forecast lookup failed: %s", type(exc).__name__)
+        return "서울 날씨 예보를 지금 조회하지 못했어요. 잠시 후 다시 시도해 주세요."
+
 def ai(question):
     global _working_gemini_model
     now = datetime.now(KST)
     normalized = re.sub(r"\s+", "", question).rstrip("?!？!。.")
+    forecast = weather_forecast(question, now)
+    if forecast is not None:
+        return forecast
     weekdays = "월화수목금토일"
     today_text = f"{now.year}년 {now.month}월 {now.day}일 {weekdays[now.weekday()]}요일"
     # Answer current-date questions from the server clock, not the model's training data.
