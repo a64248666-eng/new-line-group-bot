@@ -98,6 +98,12 @@ def ai(question):
     if (any(word in normalized for word in ("지금", "현재", "한국시간"))
             and any(word in normalized for word in ("몇시", "시간", "몇분"))):
         return f"현재 한국 시간은 {now.hour:02d}시 {now.minute:02d}분이에요. 🇰🇷"
+    # Authoritative current office-holder answer; avoid stale language-model memory.
+    president_question = ("대통령" in normalized and
+                          any(t in normalized for t in ("현재", "지금", "오늘", "현직", "누구", "누가", "이름", "대한민국", "한국", "우리나라")))
+    historical_question = any(t in normalized for t in ("전직", "전대", "역대", "과거", "이전", "전임", "당시", "2024", "2023", "2022", "탄핵", "윤석열"))
+    if president_question and not historical_question:
+        return "현재 대한민국 대통령은 이재명 대통령입니다. (2026년 11월 기준)"
     if not GEMINI_KEY: return "관리자에게 GEMINI_API_KEY 설정을 요청해 주세요."
     # For rapidly changing facts, require live grounding; do not answer from stale training data.
     current_terms = ("현재", "지금", "오늘", "최신", "요즘", "이번", "누구", "누가", "대통령", "총리", "장관", "환율", "주가", "날씨", "뉴스", "당선", "취임", "순위", "가격", "현직")
