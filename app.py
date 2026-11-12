@@ -445,7 +445,7 @@ def handle(event):
         conn.execute("""INSERT INTO message_events(event_id,group_id,user_id,display_name,message_date,message_hour)
             VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (eid,group,user,name,day,datetime.now(KST).hour))
     # Count ordinary conversation only, once per 60 seconds, at most 30/day.
-    if text and not text.startswith(("*", "/", "!")) and len(text.split()) >= 2:
+    if text and not text.startswith(("*", "/", "!")) and len(re.sub(r"\s+", "", text)) >= 4:
         with db() as conn:
             conn.execute("""INSERT INTO daily_missions(group_id,user_id,mission_date,progress,last_counted_at)
                 VALUES(%s,%s,%s,1,NOW())
@@ -627,7 +627,7 @@ def handle(event):
                 (group,user,day)).fetchone()
         progress, claimed = row if row else (0,False)
         reply(token, f"🎯 {name}님의 오늘 미션\n일반 대화 30회 참여하기 ({progress}/30)\n"
-              "※ 두 마디(띄어쓰기 기준 두 단어) 이상 일반 대화만 인정, 60초 간격으로 집계\n"
+              "※ 공백 제외 4글자 이상 일반 대화만 인정, 60초 간격으로 집계\n"
               + ("🎉 보상 수령 완료!" if claimed else
                  "🎁 완료! *미션보상 입력해서 20P 받기" if progress >= 30 else
                  "🏅 달성 보상: 20P\n완료 후 *미션보상 입력"))
