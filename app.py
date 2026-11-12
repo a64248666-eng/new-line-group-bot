@@ -75,7 +75,7 @@ def mention_text(group, category):
     mentions = []
     for uid in ids[:20]:
         tag = "@" + profile(group, uid).replace("\n", " ")[:40]
-        mentions.append({"index": utf16len(text), "length": utf16len(tag), "userId": uid})
+        mentions.append({"index": utf16len(text), "length": utf16len(tag), "type": "user", "userId": uid})
         text += tag + " "
     if len(ids) > 20: text += f"\n(20명까지 호출, 나머지 {len(ids)-20}명 제외)"
     return text, mentions
