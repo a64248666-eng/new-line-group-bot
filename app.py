@@ -84,10 +84,18 @@ _working_gemini_model = None
 
 def ai(question):
     global _working_gemini_model
+    now = datetime.now(KST)
+    normalized = re.sub(r"\\s+", "", question).rstrip("?!？!。.")
+    weekdays = "월화수목금토일"
+    today_text = f"{now.year}년 {now.month}월 {now.day}일 {weekdays[now.weekday()]}요일"
+    if re.fullmatch(r"(오늘|지금)(은|이)?(몇월몇일|몇월며칠|며칠|몇일|날짜|무슨요일|몇요일|요일)(이야|인가요|입니까|이에요|예요|야|죠|지|니|인가|일까|인지|알려줘|알려주세요|뭐야|뭔가요)?", normalized):
+        return f"오늘은 {today_text}이에요. 🇰🇷"
+    if re.fullmatch(r"(지금|현재)(은|이)?(몇시|몇시몇분|시간)(야|이야|인가요|입니까|이에요|예요|니|인지|알려줘|알려주세요|뭐야|뭔가요)?", normalized):
+        return f"현재 한국 시간은 {now.hour:02d}시 {now.minute:02d}분이에요. 🇰🇷"
     if not GEMINI_KEY: return "관리자에게 GEMINI_API_KEY 설정을 요청해 주세요."
     base = "https://generativelanguage.googleapis.com/v1beta"
     payload = {
-        "systemInstruction": {"parts": [{"text": "한국어로 핵심만 간결하게 답변하세요. 간단한 질문에는 1~3문장으로 답하세요."}]},
+        "systemInstruction": {"parts": [{"text": f"현재 기준 시간은 대한민국 서울(Asia/Seoul) {today_text} {now.hour:02d}시 {now.minute:02d}분입니다. 오늘 날짜와 현재 시간에 관한 질문에는 이 정보를 정확히 사용하세요. 한국어로 핵심만 간결하게 답변하세요. 간단한 질문에는 1~3문장으로 답하세요. 실시간 검색이 필요한 최신 사실은 확인하지 못했다면 추측하지 마세요."}]},
         "contents": [{"parts": [{"text": question[:2000]}]}],
         "generationConfig": {"maxOutputTokens": 400, "thinkingConfig": {"thinkingBudget": 0}}
     }
