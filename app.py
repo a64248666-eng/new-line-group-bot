@@ -80,36 +80,52 @@ def mention_text(group, category):
     if len(ids) > 20: text += f"\n(20명까지 호출, 나머지 {len(ids)-20}명 제외)"
     return text, mentions
 
+_working_gemini_model = None
+
 def ai(question):
+    global _working_gemini_model
     if not GEMINI_KEY: return "관리자에게 GEMINI_API_KEY 설정을 요청해 주세요."
     base = "https://generativelanguage.googleapis.com/v1beta"
-    payload = {"contents": [{"parts": [{"text": question[:3000]}]}], "generationConfig": {"maxOutputTokens": 900}}
+    payload = {
+        "systemInstruction": {"parts": [{"text": "한국어로 핵심만 간결하게 답변하세요. 간단한 질문에는 1~3문장으로 답하세요."}]},
+        "contents": [{"parts": [{"text": question[:2000]}]}],
+        "generationConfig": {"maxOutputTokens": 400, "thinkingConfig": {"thinkingBudget": 0}}
+    }
     def generate(model):
         return requests.post(f"{base}/models/{model}:generateContent",
-            headers={"x-goog-api-key": GEMINI_KEY}, json=payload, timeout=22)
+            headers={"x-goog-api-key": GEMINI_KEY}, json=payload, timeout=18)
     try:
-        r = generate(GEMINI_MODEL)
+        model = _working_gemini_model or GEMINI_MODEL
+        r = generate(model)
+        if r.status_code == 400 and "thinking" in r.text.lower():
+            payload["generationConfig"].pop("thinkingConfig", None)
+            r = generate(model)
         if r.status_code == 404:
-            # Models can be retired or unavailable for a particular API key.
-            # Discover supported generateContent models rather than hardcoding a retired ID.
-            listing = requests.get(f"{base}/models", headers={"x-goog-api-key": GEMINI_KEY}, timeout=12)
+            listing = requests.get(f"{base}/models", headers={"x-goog-api-key": GEMINI_KEY}, timeout=10)
             if listing.ok:
                 models = [m.get("name", "").removeprefix("models/") for m in listing.json().get("models", [])
                           if "generateContent" in m.get("supportedGenerationMethods", [])]
                 flash = [m for m in models if "flash" in m.lower() and "image" not in m.lower()
                          and "tts" not in m.lower() and "live" not in m.lower()]
                 alternatives = flash or models
-                alternatives.sort(key=lambda m: ("preview" in m.lower(), "lite" in m.lower(), m), reverse=False)
-                for model in alternatives[:5]:
-                    if model == GEMINI_MODEL: continue
-                    r = generate(model)
-                    if r.status_code != 404: break
+                alternatives.sort(key=lambda m: (0 if "flash-lite" in m.lower() else 1,
+                                                   "preview" in m.lower(), m))
+                for candidate in alternatives[:8]:
+                    if candidate == model: continue
+                    r = generate(candidate)
+                    if r.status_code == 400 and "thinking" in r.text.lower():
+                        payload["generationConfig"].pop("thinkingConfig", None)
+                        r = generate(candidate)
+                    if r.status_code != 404:
+                        model = candidate
+                        break
             else:
                 app.logger.warning("Gemini model listing status %s", listing.status_code)
         if r.status_code == 429: return "AI 무료 사용량 한도에 도달했어요. 나중에 다시 시도해 주세요."
         if not r.ok:
             app.logger.warning("Gemini status %s", r.status_code)
             return "AI 답변을 불러올 수 없어요."
+        _working_gemini_model = model
         parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
         return ("".join(p.get("text", "") for p in parts).strip() or "AI 답변이 비어 있어요.")[:4800]
     except (requests.RequestException, ValueError, IndexError, KeyError):
