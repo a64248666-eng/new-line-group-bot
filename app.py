@@ -97,7 +97,7 @@ _working_gemini_model = None
 
 def weather_forecast(question, now):
     """Get Seoul forecast directly instead of trusting stale model knowledge."""
-    normalized = re.sub(r"\\s+", "", question)
+    normalized = re.sub(r"\s+", "", question)
     if "날씨" not in normalized and "기온" not in normalized and "비와" not in normalized:
         return None
     if "서울" not in normalized:
@@ -142,10 +142,10 @@ def weather_forecast(question, now):
         low = daily["temperature_2m_min"][index]
         high = daily["temperature_2m_max"][index]
         rain = daily["precipitation_probability_max"][index]
-        return (f"🌤️ {day_label} 서울 날씨 ({expected})\\n"
-                f"날씨: {condition}\\n"
-                f"최저 {low:g}°C / 최고 {high:g}°C\\n"
-                f"강수확률: {rain}%\\n"
+        return (f"🌤️ {day_label} 서울 날씨 ({expected})\n"
+                f"날씨: {condition}\n"
+                f"최저 {low:g}°C / 최고 {high:g}°C\n"
+                f"강수확률: {rain}%\n"
                 "출처: Open-Meteo 기상예보 (예보는 바뀔 수 있어요)")
     except (requests.RequestException, ValueError, KeyError, IndexError, TypeError) as exc:
         app.logger.warning("Weather forecast lookup failed: %s", type(exc).__name__)
