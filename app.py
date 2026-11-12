@@ -85,12 +85,18 @@ _working_gemini_model = None
 def ai(question):
     global _working_gemini_model
     now = datetime.now(KST)
-    normalized = re.sub(r"\\s+", "", question).rstrip("?!？!。.")
+    normalized = re.sub(r"\s+", "", question).rstrip("?!？!。.")
     weekdays = "월화수목금토일"
     today_text = f"{now.year}년 {now.month}월 {now.day}일 {weekdays[now.weekday()]}요일"
-    if re.fullmatch(r"(오늘|지금)(은|이)?(몇월몇일|몇월며칠|며칠|몇일|날짜|무슨요일|몇요일|요일)(이야|인가요|입니까|이에요|예요|야|죠|지|니|인가|일까|인지|알려줘|알려주세요|뭐야|뭔가요)?", normalized):
+    # Answer current-date questions from the server clock, not the model's training data.
+    date_words = ("날짜", "몇월", "몇일", "며칠", "무슨요일", "몇요일", "오늘이", "오늘은")
+    date_context = ("오늘", "지금", "현재", "금일", "오늘날짜")
+    if (any(word in normalized for word in date_context)
+            and any(word in normalized for word in date_words)
+            and not any(word in normalized for word in ("어제", "내일", "모레", "지난", "다음", "미래", "과거", "기념일", "생일"))):
         return f"오늘은 {today_text}이에요. 🇰🇷"
-    if re.fullmatch(r"(지금|현재)(은|이)?(몇시|몇시몇분|시간)(야|이야|인가요|입니까|이에요|예요|니|인지|알려줘|알려주세요|뭐야|뭔가요)?", normalized):
+    if (any(word in normalized for word in ("지금", "현재", "한국시간"))
+            and any(word in normalized for word in ("몇시", "시간", "몇분"))):
         return f"현재 한국 시간은 {now.hour:02d}시 {now.minute:02d}분이에요. 🇰🇷"
     if not GEMINI_KEY: return "관리자에게 GEMINI_API_KEY 설정을 요청해 주세요."
     base = "https://generativelanguage.googleapis.com/v1beta"
