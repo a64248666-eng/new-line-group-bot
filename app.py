@@ -33,6 +33,11 @@ def initialize():
         conn.execute("CREATE TABLE IF NOT EXISTS processed_events (event_id TEXT PRIMARY KEY,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())")
         conn.execute("CREATE TABLE IF NOT EXISTS region_members (group_id TEXT NOT NULL, region TEXT NOT NULL, member_name TEXT NOT NULL, PRIMARY KEY(group_id,region,member_name))")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_region_members_group_region ON region_members(group_id,region)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS hourly_alert_settings (
+            group_id TEXT PRIMARY KEY, enabled BOOLEAN NOT NULL DEFAULT FALSE)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS hourly_alert_deliveries (
+            group_id TEXT NOT NULL, hour_key TEXT NOT NULL,
+            PRIMARY KEY(group_id,hour_key))""")
         conn.execute("""CREATE TABLE IF NOT EXISTS game_points (
             group_id TEXT NOT NULL, user_id TEXT NOT NULL,
             points INTEGER NOT NULL DEFAULT 0, attendance_days INTEGER NOT NULL DEFAULT 0,
@@ -384,6 +389,20 @@ def handle(event):
             ON CONFLICT(group_id,user_id) DO UPDATE SET display_name=EXCLUDED.display_name,updated_at=NOW()""", (group,user,name))
         conn.execute("""INSERT INTO message_events(event_id,group_id,user_id,display_name,message_date,message_hour)
             VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (eid,group,user,name,day,datetime.now(KST).hour))
+    if text in ("/정각알림켜기", "/정각알림끄기", "/정각알림상태"):
+        if text != "/정각알림상태" and user not in ADMINS:
+            reply(token, "⛔ 정각 알림 켜기·끄기는 관리자만 가능해.")
+            return
+        with db() as conn:
+            if text != "/정각알림상태":
+                enabled = text == "/정각알림켜기"
+                conn.execute("""INSERT INTO hourly_alert_settings(group_id,enabled)
+                    VALUES(%s,%s) ON CONFLICT(group_id)
+                    DO UPDATE SET enabled=EXCLUDED.enabled""", (group,enabled))
+            row = conn.execute("SELECT enabled FROM hourly_alert_settings WHERE group_id=%s",(group,)).fetchone()
+        status = "켜짐 🔔" if row and row[0] else "꺼짐 🔕"
+        reply(token, f"⏰ 정각 알림: {status}\n한국 시간 기준 24시간 매 정각\n관리자 명령어: /정각알림켜기 · /정각알림끄기")
+        return
     if text == "*출석":
         from datetime import timedelta
         yesterday = (datetime.now(KST).date() - timedelta(days=1)).isoformat()
@@ -665,6 +684,44 @@ def ensure_db():
         if not _ready:
             initialize()
             _ready = True
+
+@app.post("/internal/hourly-alert")
+def hourly_alert():
+    secret = os.getenv("HOURLY_ALERT_SECRET", "")
+    supplied = request.headers.get("X-Hourly-Secret", "")
+    if not secret or not hmac.compare_digest(secret,supplied):
+        abort(403)
+    initialize()
+    now = datetime.now(KST)
+    hour_key = now.strftime("%Y-%m-%d-%H")
+    hour_label = f"{'오전' if now.hour < 12 else '오후'} {now.hour % 12 or 12}시"
+    with db() as conn:
+        groups = [row[0] for row in conn.execute(
+            "SELECT group_id FROM hourly_alert_settings WHERE enabled=TRUE").fetchall()]
+    sent = 0
+    for group_id in groups:
+        try:
+            with db() as conn:
+                # Serialize hourly attempts across overlapping scheduler executions.
+                conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (group_id+":hourly"))
+                exists = conn.execute(
+                    "SELECT 1 FROM hourly_alert_deliveries WHERE group_id=%s AND hour_key=%s",
+                    (group_id,hour_key)).fetchone()
+                enabled = conn.execute(
+                    "SELECT enabled FROM hourly_alert_settings WHERE group_id=%s",
+                    (group_id,)).fetchone()
+                if exists or not enabled or not enabled[0]:
+                    continue
+                payload = {"to":group_id,"messages":[{"type":"text",
+                    "text":f"🔔 레드봇 3.0 정각 알림\n🕒 현재 {hour_label} 정각입니다!\n❤️ 즐거운 시간 보내세요!"}]}
+                response = requests.post(API+"/message/push",json=payload,headers=headers(),timeout=15)
+                response.raise_for_status()
+                conn.execute("INSERT INTO hourly_alert_deliveries(group_id,hour_key) VALUES(%s,%s)",
+                             (group_id,hour_key))
+                sent += 1
+        except Exception:
+            app.logger.exception("Hourly alert failed for group")
+    return {"status":"ok","hour":hour_key,"sent":sent}
 
 @app.get("/")
 def health():
