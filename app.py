@@ -433,7 +433,7 @@ def handle(event):
 🎲 게임·추첨
 *주사위 / *가위바위보
 *랜덤추첨 / *랜덤추첨 3
-*퀴즈 (관리자 출제·하루 10회) / *정답 1
+*퀴즈 (관리자 출제·하루 20회) / *정답 1
 
 🏆 출석·포인트
 *출석 / *내포인트 / *출석랭킹
@@ -552,7 +552,7 @@ def handle(event):
                 VALUES(%s,%s,1)
                 ON CONFLICT(group_id,quiz_date) DO UPDATE
                 SET issued_count=quiz_daily_limits.issued_count+1
-                WHERE quiz_daily_limits.issued_count < 10
+                WHERE quiz_daily_limits.issued_count < 20
                 RETURNING issued_count""", (group,day)).fetchone()
             if quota:
                 conn.execute("""INSERT INTO quiz_rounds(group_id,question,answer,choices,created_at)
@@ -561,11 +561,11 @@ def handle(event):
                     answer=EXCLUDED.answer,choices=EXCLUDED.choices,created_at=NOW()""",
                     (group,question,str(correct),"|".join(choices)))
         if not quota:
-            reply(token, "🛑 오늘 퀴즈 10회 출제를 모두 사용했어!\n내일 오전 0시(한국 시간)에 다시 10회 출제할 수 있어.")
+            reply(token, "🛑 오늘 퀴즈 20회 출제를 모두 사용했어!\n내일 오전 0시(한국 시간)에 다시 20회 출제할 수 있어.")
             return
-        reply(token, "🧠 레드봇 퀴즈! ("+str(quota[0])+"/10회)\n"+question+"\n"+
+        reply(token, "🧠 레드봇 퀴즈! ("+str(quota[0])+"/20회)\n"+question+"\n"+
               "\n".join(f"{i}. {choice}" for i,choice in enumerate(choices,1))+
-              "\n\n정답은 *정답 1 처럼 입력해 줘!\n⏳ 제한시간 10분 · 정답 +10P\n※ 관리자만 출제 가능 · 하루 10회 · 새 퀴즈는 이전 문제를 교체해.")
+              "\n\n정답은 *정답 1 처럼 입력해 줘!\n⏳ 제한시간 10분 · 정답 +10P\n※ 관리자만 출제 가능 · 하루 20회 · 새 퀴즈는 이전 문제를 교체해.")
         return
     answer_match = re.fullmatch(r"\*정답\s+([1-4])",text)
     if answer_match:
