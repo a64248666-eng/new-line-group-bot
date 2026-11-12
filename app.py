@@ -340,9 +340,6 @@ def handle(event):
     if region_edit:
         action, region, member_name = region_edit.groups()
         member_name = member_name.strip()
-        if user not in ADMINS:
-            reply(token, "지역 명단 등록·삭제는 관리자만 할 수 있어.")
-            return
         if not member_name or "\n" in member_name or "\r" in member_name:
             reply(token, "사용법: /지역추가 서울 홍길동 또는 /지역삭제 서울 홍길동")
             return
