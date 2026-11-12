@@ -401,6 +401,28 @@ def handle(event):
             "제주도", "세종시"):
             reply(token, f"📍 {region} 명단은 아직 비어 있어.")
             return
+    if text in ("*점메추", "*저메추", "*메뉴추천"):
+        lunch = (
+            "김치찌개", "된장찌개", "제육볶음", "돈가스", "비빔밥", "순두부찌개",
+            "국밥", "냉면", "칼국수", "쌀국수", "짜장면", "짬뽕", "볶음밥",
+            "초밥", "우동", "라멘", "김밥", "떡볶이", "카레", "샌드위치",
+            "파스타", "부대찌개", "콩나물국밥", "오므라이스", "덮밥",
+        )
+        dinner = (
+            "삼겹살", "치킨", "피자", "족발", "보쌈", "곱창", "닭갈비",
+            "찜닭", "감자탕", "마라탕", "샤브샤브", "소고기구이",
+            "양꼬치", "회", "초밥", "파스타", "햄버거", "부대찌개",
+            "닭볶음탕", "갈비찜", "떡볶이", "순대국", "고등어구이",
+            "불고기", "쭈꾸미볶음",
+        )
+        if text == "*점메추":
+            title, choices = "🍱 오늘의 점심 추천", lunch
+        elif text == "*저메추":
+            title, choices = "🍽️ 오늘의 저녁 추천", dinner
+        else:
+            title, choices = "🍴 오늘의 메뉴 추천", tuple(dict.fromkeys(lunch + dinner))
+        reply(token, f"{title}\n🎯 {secrets.choice(choices)}!\n다시 뽑으려면 {text} 입력해 줘.")
+        return
     if text == "*주사위":
         reply(token, f"🎲 주사위 결과: {secrets.randbelow(6) + 1}!")
         return
