@@ -444,14 +444,14 @@ def handle(event):
             ON CONFLICT(group_id,user_id) DO UPDATE SET display_name=EXCLUDED.display_name,updated_at=NOW()""", (group,user,name))
         conn.execute("""INSERT INTO message_events(event_id,group_id,user_id,display_name,message_date,message_hour)
             VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (eid,group,user,name,day,datetime.now(KST).hour))
-    # Count ordinary conversation only, once per 60 seconds, at most 10/day.
-    if text and not text.startswith(("*", "/", "!")) and len(text) >= 4:
+    # Count ordinary conversation only, once per 60 seconds, at most 30/day.
+    if text and not text.startswith(("*", "/", "!")) and len(text.split()) >= 2:
         with db() as conn:
             conn.execute("""INSERT INTO daily_missions(group_id,user_id,mission_date,progress,last_counted_at)
                 VALUES(%s,%s,%s,1,NOW())
                 ON CONFLICT(group_id,user_id,mission_date) DO UPDATE
                 SET progress=daily_missions.progress+1,last_counted_at=NOW()
-                WHERE daily_missions.progress < 10
+                WHERE daily_missions.progress < 30
                   AND (daily_missions.last_counted_at IS NULL
                        OR daily_missions.last_counted_at <= NOW()-INTERVAL '60 seconds')""",
                 (group,user,day))
@@ -626,17 +626,17 @@ def handle(event):
                 WHERE group_id=%s AND user_id=%s AND mission_date=%s""",
                 (group,user,day)).fetchone()
         progress, claimed = row if row else (0,False)
-        reply(token, f"🎯 {name}님의 오늘 미션\n일반 대화 10회 참여하기 ({progress}/10)\n"
-              "※ 4글자 이상 일반 대화만 인정, 60초 간격으로 집계\n"
+        reply(token, f"🎯 {name}님의 오늘 미션\n일반 대화 30회 참여하기 ({progress}/30)\n"
+              "※ 두 마디(띄어쓰기 기준 두 단어) 이상 일반 대화만 인정, 60초 간격으로 집계\n"
               + ("🎉 보상 수령 완료!" if claimed else
-                 "🎁 완료! *미션보상 입력해서 20P 받기" if progress >= 10 else
+                 "🎁 완료! *미션보상 입력해서 20P 받기" if progress >= 30 else
                  "🏅 달성 보상: 20P\n완료 후 *미션보상 입력"))
         return
     if text == "*미션보상":
         with db() as conn:
             claimed_row = conn.execute("""UPDATE daily_missions SET claimed=TRUE
                 WHERE group_id=%s AND user_id=%s AND mission_date=%s
-                AND progress >= 10 AND claimed=FALSE RETURNING progress""",
+                AND progress >= 30 AND claimed=FALSE RETURNING progress""",
                 (group,user,day)).fetchone()
             if claimed_row:
                 conn.execute("""INSERT INTO game_points(group_id,user_id,points)
@@ -648,7 +648,7 @@ def handle(event):
                     (group,user,day)).fetchone()
         reply(token, "🎉 오늘 미션 완료! +20P 지급했어!" if claimed_row else
               "✅ 오늘 미션 보상은 이미 받았어." if status and status[1] else
-              f"🎯 아직 미션 진행 중이야! ({status[0] if status else 0}/10)")
+              f"🎯 아직 미션 진행 중이야! ({status[0] if status else 0}/30)")
         return
     if text == "*보물상자":
         with db() as conn:
