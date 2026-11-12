@@ -1,4 +1,4 @@
-import os, re, hmac, hashlib, base64, logging, secrets
+import os, re, hmac, hashlib, base64, logging, secrets, time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from threading import Lock
@@ -289,8 +289,21 @@ def ai(question):
         payload["tools"] = [{"google_search": {}}]
         payload["generationConfig"].pop("thinkingConfig", None)
     def generate(model):
-        return requests.post(f"{base}/models/{model}:generateContent",
-            headers={"x-goog-api-key": GEMINI_KEY}, json=payload, timeout=18)
+        response = None
+        for attempt in range(3):
+            try:
+                response = requests.post(f"{base}/models/{model}:generateContent",
+                    headers={"x-goog-api-key": GEMINI_KEY}, json=payload, timeout=20)
+            except requests.RequestException:
+                if attempt == 2:
+                    raise
+                time.sleep(attempt + 1)
+                continue
+            if response.status_code not in (500, 502, 503, 504):
+                return response
+            if attempt < 2:
+                time.sleep(attempt + 1)
+        return response
     try:
         model = _working_gemini_model or GEMINI_MODEL
         r = generate(model)
@@ -305,9 +318,8 @@ def ai(question):
                 flash = [m for m in models if "flash" in m.lower() and "image" not in m.lower()
                          and "tts" not in m.lower() and "live" not in m.lower()]
                 alternatives = flash or models
-                alternatives.sort(key=lambda m: (0 if "flash-lite" in m.lower() else 1,
-                                                   "preview" in m.lower(), m))
-                for candidate in alternatives[:8]:
+                alternatives.sort(key=lambda m: ("preview" in m.lower(), "lite" not in m.lower(), m))
+                for candidate in alternatives[:12]:
                     if candidate == model: continue
                     r = generate(candidate)
                     if r.status_code == 400 and "thinking" in r.text.lower():
@@ -318,13 +330,18 @@ def ai(question):
                         break
             else:
                 app.logger.warning("Gemini model listing status %s", listing.status_code)
-        if needs_live and not r.ok:
-            app.logger.warning("Gemini grounded search status %s", r.status_code)
-            return "최신 정보를 실시간으로 확인하지 못했어요. 정확하지 않은 정보를 알려드리지 않기 위해 답변을 보류할게요."
-        if r.status_code == 429: return "AI 무료 사용량 한도에 도달했어요. 나중에 다시 시도해 주세요."
+        if r.status_code == 429:
+            app.logger.warning("Gemini quota exceeded (429)")
+            return "⏳ Gemini API 요청 한도에 도달했어. 잠시 후 다시 시도해 줘. 반복되면 API 사용량·할당량을 확인해야 해."
+        if r.status_code in (500, 502, 503, 504):
+            app.logger.warning("Gemini temporarily unavailable: %s", r.status_code)
+            return "⏳ Gemini 서버가 잠시 불안정해. 자동 재시도했지만 실패했어. 잠시 후 다시 질문해 줘."
+        if r.status_code == 404:
+            app.logger.warning("Gemini model unavailable (404)")
+            return "⚙️ Gemini 모델을 찾지 못했어. 관리자가 GEMINI_MODEL 설정과 API 키의 모델 접근 권한을 확인해야 해."
         if not r.ok:
-            app.logger.warning("Gemini status %s", r.status_code)
-            return "AI 답변을 불러올 수 없어요."
+            app.logger.warning("Gemini request failed: %s", r.status_code)
+            return "AI 연결 오류가 발생했어. 잠시 후 다시 시도해 줘."
         if needs_live:
             candidates = r.json().get("candidates", [])
             metadata = candidates[0].get("groundingMetadata", {}) if candidates else {}
