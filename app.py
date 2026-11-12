@@ -30,6 +30,7 @@ def initialize():
         conn.execute("ALTER TABLE message_events ADD COLUMN IF NOT EXISTS message_hour SMALLINT")
         conn.execute("CREATE TABLE IF NOT EXISTS member_profiles (group_id TEXT NOT NULL,user_id TEXT NOT NULL,display_name TEXT NOT NULL,updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),PRIMARY KEY(group_id,user_id))")
         conn.execute("CREATE TABLE IF NOT EXISTS mention_members (group_id TEXT NOT NULL,category TEXT NOT NULL,user_id TEXT NOT NULL,PRIMARY KEY(group_id,category,user_id))")
+        conn.execute("CREATE TABLE IF NOT EXISTS group_admins (group_id TEXT NOT NULL,user_id TEXT NOT NULL,PRIMARY KEY(group_id,user_id))")
         conn.execute("CREATE TABLE IF NOT EXISTS processed_events (event_id TEXT PRIMARY KEY,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())")
         conn.execute("CREATE TABLE IF NOT EXISTS region_members (group_id TEXT NOT NULL, region TEXT NOT NULL, member_name TEXT NOT NULL, PRIMARY KEY(group_id,region,member_name))")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_region_members_group_region ON region_members(group_id,region)")
@@ -397,8 +398,45 @@ def handle(event):
             ON CONFLICT(group_id,user_id) DO UPDATE SET display_name=EXCLUDED.display_name,updated_at=NOW()""", (group,user,name))
         conn.execute("""INSERT INTO message_events(event_id,group_id,user_id,display_name,message_date,message_hour)
             VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (eid,group,user,name,day,datetime.now(KST).hour))
+    with db() as conn:
+        is_admin = user in ADMINS or conn.execute(
+            "SELECT 1 FROM group_admins WHERE group_id=%s AND user_id=%s", (group,user)
+        ).fetchone() is not None
+    admin_command = re.fullmatch(r"/관리자(추가|삭제)(?:\s+.*)?", text)
+    if admin_command:
+        if not is_admin:
+            reply(token, "⛔ 관리자 추가·삭제는 기존 관리자만 가능해.")
+            return
+        action = admin_command.group(1)
+        targets = list(dict.fromkeys(
+            m["userId"] for m in (message.get("mention") or {}).get("mentionees", [])
+            if m.get("userId")
+        ))
+        if not targets:
+            reply(token, f"사용법: /관리자{action} @멤버 (LINE 실제 멘션)")
+            return
+        changed = 0
+        protected = 0
+        with db() as conn:
+            for target in targets:
+                if target in ADMINS:
+                    protected += 1
+                    continue
+                if action == "추가":
+                    result = conn.execute(
+                        "INSERT INTO group_admins(group_id,user_id) VALUES(%s,%s) ON CONFLICT DO NOTHING RETURNING user_id",
+                        (group,target)).fetchone()
+                else:
+                    result = conn.execute(
+                        "DELETE FROM group_admins WHERE group_id=%s AND user_id=%s RETURNING user_id",
+                        (group,target)).fetchone()
+                changed += bool(result)
+        reply(token, f"🛡️ 관리자 {action} 완료: {changed}명" +
+              (f"\n최초 설정 관리자는 변경 불가: {protected}명" if protected else "") +
+              "\n이 단체방에만 적용돼.")
+        return
     if text == "/포인트추가" or text.startswith("/포인트추가 "):
-        if user not in ADMINS:
+        if not is_admin:
             reply(token, "⛔ 포인트 지급은 관리자만 가능해.")
             return
         amount_match = re.fullmatch(r"/포인트추가\s+([0-9]{1,7})(?:\s+.*)?", text)
@@ -427,7 +465,7 @@ def handle(event):
         reply(token, f"🎁 관리자 포인트 지급 완료!\n대상: {len(targets)}명\n1명당 +{amount:,}P")
         return
     if text in ("/정각알림켜기", "/정각알림끄기", "/정각알림상태"):
-        if text != "/정각알림상태" and user not in ADMINS:
+        if text != "/정각알림상태" and not is_admin:
             reply(token, "⛔ 정각 알림 켜기·끄기는 관리자만 가능해.")
             return
         with db() as conn:
@@ -453,6 +491,7 @@ def handle(event):
 /남초추가 @멘션 /남초삭제 @멘션 /남초목록
 /여초추가 @멘션 /여초삭제 @멘션 /여초목록
 ※ 남초·여초 명단 수정/조회는 관리자만
+/관리자추가 @멘션 /관리자삭제 @멘션 (관리자만)
 
 🗺️ 지역 명단 (모든 멤버 수정 가능)
 /지역추가 서울 홍길동
@@ -572,7 +611,7 @@ def handle(event):
             reply(token, f"🍀 {name}님의 오늘 행운의 숫자: {lucky}\n※ 재미로 보는 숫자야.")
         return
     if text == "*퀴즈":
-        if user not in ADMINS:
+        if not is_admin:
             reply(token, "⛔ 퀴즈 출제는 관리자만 가능해!\n정답 제출(*정답 1)은 모든 멤버가 할 수 있어.")
             return
         question, choices, correct = secrets.choice(QUIZ_BANK)
@@ -786,7 +825,7 @@ def handle(event):
     match = re.fullmatch(r"/(남초|여초)(추가|삭제|목록)(?:\s+.*)?", text)
     if match:
         category, action = match.groups()
-        if user not in ADMINS:
+        if not is_admin:
             reply(token, "등록된 관리자만 사용할 수 있어요.")
             return
         if action == "목록":
