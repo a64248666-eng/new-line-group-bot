@@ -61,6 +61,12 @@ def initialize():
             issued_count INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY(group_id,quiz_date))""")
         conn.execute("""CREATE TABLE IF NOT EXISTS quiz_history (group_id TEXT NOT NULL, question TEXT NOT NULL, issued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(group_id,question))""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS point_transactions (
+            event_id TEXT PRIMARY KEY, group_id TEXT NOT NULL, sender_id TEXT NOT NULL,
+            recipient_id TEXT, kind TEXT NOT NULL, amount INTEGER NOT NULL,
+            reward INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
+        conn.execute("""CREATE INDEX IF NOT EXISTS idx_point_transactions_slot
+            ON point_transactions(group_id,sender_id,kind,created_at)""")
         conn.execute("""CREATE TABLE IF NOT EXISTS quiz_rounds (
             group_id TEXT PRIMARY KEY, question TEXT NOT NULL, answer TEXT NOT NULL,
             choices TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
@@ -1670,7 +1676,7 @@ def handle(event):
 *출석 / *내포인트 / *출석랭킹\n*오늘미션 / *미션보상 / *보물상자
 
 🛍️ 포인트 상점
-*상점 / *구매 왕관 / *인벤토리
+*상점 / *구매 왕관 / *인벤토리\n*선물 @친구 100 / *슬롯 (50P, 하루 10회)
 
 🍜 메뉴 추천
 *점메추 / *저메추 / *메뉴추천
@@ -1692,7 +1698,66 @@ def handle(event):
     if text == "*상점":
         reply(token, "🛍️ 레드봇 포인트 상점\n"+
               "\n".join(f"{emoji} {item}: {price:,}P" for item,(price,emoji) in shop.items())+
-              "\n\n구매: *구매 왕관\n보유 아이템: *인벤토리\n포인트 확인: *내포인트\n※ 가상 아이템이며 현금 가치가 없어.")
+              "\n\n구매: *구매 왕관\n보유 아이템: *인벤토리\n포인트 확인: *내포인트\n🎁 선물: *선물 @친구 100\n🎰 슬롯: *슬롯 (50P, 하루 10회)\n※ 가상 아이템이며 현금 가치가 없어.")
+        return
+    if text.startswith("*선물"):
+        # Require exactly one real LINE mention; never resolve a recipient from display name text.
+        gift = re.fullmatch(r"\\*선물\\s+.+?\\s+(\\d{1,7})", text)
+        mentions = (message.get("mention") or {}).get("mentionees") or []
+        targets = list(dict.fromkeys(m.get("userId") for m in mentions if m.get("userId")))
+        if not gift or len(targets) != 1:
+            reply(token, "🎁 사용법: *선물 @친구 100\\nLINE의 실제 @멘션으로 받는 사람 한 명을 지정해 줘.")
+            return
+        recipient, amount = targets[0], int(gift.group(1))
+        if recipient == user or not 1 <= amount <= 100000:
+            reply(token, "🎁 본인에게는 선물할 수 없어. 선물은 1~100,000P까지 가능해.")
+            return
+        with db() as conn:
+            # Event IDs are globally unique and processed_events already deduplicates webhook retries.
+            # Conditional debit prevents negative balances during concurrent commands.
+            balance = conn.execute("""UPDATE game_points SET points=points-%s
+                WHERE group_id=%s AND user_id=%s AND points >= %s RETURNING points""",
+                (amount,group,user,amount)).fetchone()
+            if balance:
+                conn.execute("""INSERT INTO game_points(group_id,user_id,points)
+                    VALUES(%s,%s,%s) ON CONFLICT(group_id,user_id)
+                    DO UPDATE SET points=game_points.points+EXCLUDED.points""",(group,recipient,amount))
+                conn.execute("""INSERT INTO point_transactions(event_id,group_id,sender_id,recipient_id,kind,amount)
+                    VALUES(%s,%s,%s,%s,'gift',%s)""",(eid,group,user,recipient,amount))
+                result = f"🎁 {name}님이 {amount:,}P 선물했어!\\n💰 남은 포인트: {balance[0]:,}P"
+            else:
+                current = conn.execute("SELECT points FROM game_points WHERE group_id=%s AND user_id=%s",(group,user)).fetchone()
+                result = f"💸 선물할 포인트가 부족해!\\n보유: {(current[0] if current else 0):,}P / 필요: {amount:,}P"
+        reply(token,result)
+        return
+    if text == "*슬롯":
+        price = 50
+        with db() as conn:
+            conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", ("slot:"+group+":"+user,))
+            used = conn.execute("""SELECT COUNT(*) FROM point_transactions
+                WHERE group_id=%s AND sender_id=%s AND kind='slot'
+                AND (created_at AT TIME ZONE 'Asia/Seoul')::date=%s::date""",(group,user,day)).fetchone()[0]
+            if used >= 10:
+                result = "🎰 슬롯은 하루 10회까지 이용할 수 있어. 내일 다시 도전해 줘!"
+            else:
+                balance = conn.execute("""UPDATE game_points SET points=points-%s
+                    WHERE group_id=%s AND user_id=%s AND points >= %s RETURNING points""",
+                    (price,group,user,price)).fetchone()
+                if not balance:
+                    current = conn.execute("SELECT points FROM game_points WHERE group_id=%s AND user_id=%s",(group,user)).fetchone()
+                    result = f"💸 슬롯 이용료는 50P야!\\n현재 보유: {(current[0] if current else 0):,}P"
+                else:
+                    roll = secrets.randbelow(100)
+                    reward = 200 if roll == 0 else 100 if roll < 5 else 50 if roll < 20 else 20 if roll < 50 else 0
+                    conn.execute("""UPDATE game_points SET points=points+%s
+                        WHERE group_id=%s AND user_id=%s""",(reward,group,user))
+                    conn.execute("""INSERT INTO point_transactions(event_id,group_id,sender_id,kind,amount,reward)
+                        VALUES(%s,%s,%s,'slot',%s,%s)""",(eid,group,user,price,reward))
+                    result = (f"🎰 슬롯 결과: {reward:,}P 당첨!\\n"
+                              f"이용료 -50P / 당첨 +{reward:,}P\\n"
+                              f"💰 남은 포인트: {balance[0]+reward:,}P\\n"
+                              f"오늘 이용: {used+1}/10회")
+        reply(token,result)
         return
     if text == "*인벤토리":
         with db() as conn:
