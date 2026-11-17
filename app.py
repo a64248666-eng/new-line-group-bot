@@ -1848,9 +1848,9 @@ def handle(event):
                 ON CONFLICT(group_id) DO UPDATE SET question=EXCLUDED.question,
                 answer=EXCLUDED.answer,choices=EXCLUDED.choices,created_at=NOW()""",
                 (group,question,str(correct),"|".join(choices)))
-        reply(token, "🧠 레드봇 퀴즈!\\n"+question+"\\n"+
-              "\\n".join(f"{i}. {choice}" for i,choice in enumerate(choices,1))+
-              "\\n\\n정답은 *정답 1 처럼 입력해 줘!\\n⏳ 출제 15초 후부터 정답 인정 · 제한시간 10분 · 정답 +10P\\n※ 관리자만 출제 가능 · 하루 출제 횟수 무제한 · 새 퀴즈는 이전 문제를 교체해.")
+        reply(token, "🧠 레드봇 퀴즈!\n"+question+"\n"+
+              "\n".join(f"{i}. {choice}" for i,choice in enumerate(choices,1))+
+              "\n\n정답은 *정답 1 처럼 입력해 줘!\n⏳ 출제 15초 후부터 정답 인정 · 제한시간 10분 · 정답 +10P\n※ 관리자만 출제 가능 · 하루 출제 횟수 무제한 · 새 퀴즈는 이전 문제를 교체해.")
         return
     answer_match = re.fullmatch(r"\*정답\s+([1-4])",text)
     if answer_match:
