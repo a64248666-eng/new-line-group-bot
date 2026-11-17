@@ -1886,7 +1886,7 @@ def handle(event):
                 (group,question,str(correct),"|".join(choices)))
         reply(token, "🧠 레드봇 퀴즈!\n"+question+"\n"+
               "\n".join(f"{i}. {choice}" for i,choice in enumerate(choices,1))+
-              "\n\n정답은 *정답 1 처럼 입력해 줘!\n⏳ 출제 15초 후부터 정답 인정 · 제한시간 10분 · 정답 +10P\n※ 관리자만 출제 가능 · 하루 출제 횟수 무제한 · 새 퀴즈는 이전 문제를 교체해.")
+              "\n\n정답은 *정답 1 처럼 입력해 줘!\n⏳ 제한시간 10분 · 정답 +10P\n※ 관리자만 출제 가능 · 하루 출제 횟수 무제한 · 새 퀴즈는 이전 문제를 교체해.")
         return
     answer_match = re.fullmatch(r"\*정답\s+([1-4])",text)
     if answer_match:
@@ -1900,8 +1900,6 @@ def handle(event):
                 if datetime.now(KST) - row[1].astimezone(KST) > timedelta(minutes=10):
                     conn.execute("DELETE FROM quiz_rounds WHERE group_id=%s",(group,))
                     result = "⏳ 퀴즈 시간이 끝났어! *퀴즈로 새 문제를 시작해 줘."
-                elif datetime.now(KST) - row[1].astimezone(KST) < timedelta(seconds=15):
-                    result = "⏳ 문제 출제 후 15초가 지나야 정답을 제출할 수 있어! 잠시 후 다시 입력해 줘."
                 elif answer_match.group(1) != row[0]:
                     result = "❌ 아쉽지만 오답이야! 다시 도전해 봐."
                 else:
