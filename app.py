@@ -1702,11 +1702,11 @@ def handle(event):
         return
     if text.startswith("*선물"):
         # Require exactly one real LINE mention; never resolve a recipient from display name text.
-        gift = re.fullmatch(r"\\*선물\\s+.+?\\s+(\\d{1,7})", text)
+        gift = re.fullmatch(r"\*선물\s+.+?\s+(\d{1,7})", text)
         mentions = (message.get("mention") or {}).get("mentionees") or []
         targets = list(dict.fromkeys(m.get("userId") for m in mentions if m.get("userId")))
         if not gift or len(targets) != 1:
-            reply(token, "🎁 사용법: *선물 @친구 100\\nLINE의 실제 @멘션으로 받는 사람 한 명을 지정해 줘.")
+            reply(token, "🎁 사용법: *선물 @친구 100\nLINE의 실제 @멘션으로 받는 사람 한 명을 지정해 줘.")
             return
         recipient, amount = targets[0], int(gift.group(1))
         if recipient == user or not 1 <= amount <= 100000:
@@ -1724,10 +1724,10 @@ def handle(event):
                     DO UPDATE SET points=game_points.points+EXCLUDED.points""",(group,recipient,amount))
                 conn.execute("""INSERT INTO point_transactions(event_id,group_id,sender_id,recipient_id,kind,amount)
                     VALUES(%s,%s,%s,%s,'gift',%s)""",(eid,group,user,recipient,amount))
-                result = f"🎁 {name}님이 {amount:,}P 선물했어!\\n💰 남은 포인트: {balance[0]:,}P"
+                result = f"🎁 {name}님이 {amount:,}P 선물했어!\n💰 남은 포인트: {balance[0]:,}P"
             else:
                 current = conn.execute("SELECT points FROM game_points WHERE group_id=%s AND user_id=%s",(group,user)).fetchone()
-                result = f"💸 선물할 포인트가 부족해!\\n보유: {(current[0] if current else 0):,}P / 필요: {amount:,}P"
+                result = f"💸 선물할 포인트가 부족해!\n보유: {(current[0] if current else 0):,}P / 필요: {amount:,}P"
         reply(token,result)
         return
     if text == "*슬롯":
@@ -1745,7 +1745,7 @@ def handle(event):
                     (price,group,user,price)).fetchone()
                 if not balance:
                     current = conn.execute("SELECT points FROM game_points WHERE group_id=%s AND user_id=%s",(group,user)).fetchone()
-                    result = f"💸 슬롯 이용료는 50P야!\\n현재 보유: {(current[0] if current else 0):,}P"
+                    result = f"💸 슬롯 이용료는 50P야!\n현재 보유: {(current[0] if current else 0):,}P"
                 else:
                     roll = secrets.randbelow(100)
                     reward = 200 if roll == 0 else 100 if roll < 5 else 50 if roll < 20 else 20 if roll < 50 else 0
@@ -1753,9 +1753,9 @@ def handle(event):
                         WHERE group_id=%s AND user_id=%s""",(reward,group,user))
                     conn.execute("""INSERT INTO point_transactions(event_id,group_id,sender_id,kind,amount,reward)
                         VALUES(%s,%s,%s,'slot',%s,%s)""",(eid,group,user,price,reward))
-                    result = (f"🎰 슬롯 결과: {reward:,}P 당첨!\\n"
-                              f"이용료 -50P / 당첨 +{reward:,}P\\n"
-                              f"💰 남은 포인트: {balance[0]+reward:,}P\\n"
+                    result = (f"🎰 슬롯 결과: {reward:,}P 당첨!\n"
+                              f"이용료 -50P / 당첨 +{reward:,}P\n"
+                              f"💰 남은 포인트: {balance[0]+reward:,}P\n"
                               f"오늘 이용: {used+1}/10회")
         reply(token,result)
         return
