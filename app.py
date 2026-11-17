@@ -1721,7 +1721,7 @@ def handle(event):
     home_tiers = ((0,0),(300,3),(800,6),(2000,10),(5000,20))
     pet_emoji = {"강아지":"🐶","고양이":"🐱","아기용":"🐲"}
     if text == "*펫상점":
-        reply(token, "🐣 펫 입양 상점\\n"+ "\\n".join(f"{pet_emoji[k]} {k}: {v:,}P" for k,v in pet_prices.items())+"\\n입양: *펫입양 강아지\\n상태: *내펫")
+        reply(token, "🐣 펫 입양 상점\n"+ "\n".join(f"{pet_emoji[k]} {k}: {v:,}P" for k,v in pet_prices.items())+"\n입양: *펫입양 강아지\n상태: *내펫")
         return
     if text.startswith("*펫입양 "):
         species = text[len("*펫입양 "):].strip()
@@ -1739,7 +1739,7 @@ def handle(event):
                     result = f"💸 입양하려면 {pet_prices[species]:,}P가 필요해."
                 else:
                     conn.execute("INSERT INTO pet_companions(group_id,user_id,species,pet_name) VALUES(%s,%s,%s,%s)",(group,user,species,species))
-                    result = f"{pet_emoji[species]} {species} 입양 성공!\\n남은 포인트: {paid[0]:,}P\\n*내펫으로 확인해 줘."
+                    result = f"{pet_emoji[species]} {species} 입양 성공!\n남은 포인트: {paid[0]:,}P\n*내펫으로 확인해 줘."
         reply(token,result)
         return
     if text == "*내펫":
@@ -1749,7 +1749,7 @@ def handle(event):
             reply(token,"🐣 아직 펫이 없어! *펫상점에서 입양해 줘.")
         else:
             species,nm,lv,xp,evo,hg,hy,hp=p
-            reply(token,f"{pet_emoji.get(species,'🐾')} {nm} ({species})\\n레벨 {lv} · EXP {xp}/100 · 진화 {evo}/3\\n🍖 포만감 {hg}/100 · 🧼 청결 {hy}/100 · ❤️ 행복 {hp}/100\\n*펫밥 / *펫목욕 / *펫놀기 / *펫간식 / *펫진화")
+            reply(token,f"{pet_emoji.get(species,'🐾')} {nm} ({species})\n레벨 {lv} · EXP {xp}/100 · 진화 {evo}/3\n🍖 포만감 {hg}/100 · 🧼 청결 {hy}/100 · ❤️ 행복 {hp}/100\n*펫밥 / *펫목욕 / *펫놀기 / *펫간식 / *펫진화")
         return
     if text in ("*펫밥","*펫목욕","*펫놀기","*펫간식","*펫진화"):
         actions={"*펫밥":("feed_count",3,30,"hunger",30,10),"*펫목욕":("bath_count",3,50,"hygiene",40,10),"*펫놀기":("play_count",5,50,"happiness",30,15),"*펫간식":("treat_count",3,80,"happiness",40,20)}
@@ -1771,7 +1771,7 @@ def handle(event):
                         result="💸 진화 비용 500P가 필요해."
                     else:
                         conn.execute("UPDATE pet_companions SET evolution=evolution+1 WHERE group_id=%s AND user_id=%s",(group,user))
-                        result=f"✨ 펫 진화 성공! {evo+1}/3단계\\n남은 포인트: {paid[0]:,}P"
+                        result=f"✨ 펫 진화 성공! {evo+1}/3단계\n남은 포인트: {paid[0]:,}P"
             else:
                 column,limit,cost,stat,inc,exp=actions[text]
                 count={"feed_count":p[4],"bath_count":p[5],"play_count":p[6],"treat_count":p[7]}[column] if p[3]==day else 0
@@ -1786,11 +1786,11 @@ def handle(event):
                             conn.execute("UPDATE pet_companions SET feed_count=0,bath_count=0,play_count=0,treat_count=0,last_care_date=%s WHERE group_id=%s AND user_id=%s",(day,group,user))
                         # Whitelisted column names only; no user-provided SQL identifiers.
                         conn.execute(f"UPDATE pet_companions SET {column}={column}+1,{stat}=LEAST(100,{stat}+%s),level=LEAST(20,level+(exp+%s)/100),exp=(exp+%s)%%100 WHERE group_id=%s AND user_id=%s",(inc,exp,exp,group,user))
-                        result=f"🐾 {text[1:]} 완료! 경험치 +{exp}\\n포인트 -{cost}P · 잔액 {paid[0]:,}P\\n오늘 {count+1}/{limit}회"
+                        result=f"🐾 {text[1:]} 완료! 경험치 +{exp}\n포인트 -{cost}P · 잔액 {paid[0]:,}P\n오늘 {count+1}/{limit}회"
         reply(token,result)
         return
     if text == "*집상점":
-        reply(token,"🏠 집 구매/업그레이드\\n오두막 300P (3칸) · 아담한 집 800P (6칸)\\n2층 집 2,000P (10칸) · 대저택 5,000P (20칸)\\n*집구매 / *집업그레이드 / *내집")
+        reply(token,"🏠 집 구매/업그레이드\n오두막 300P (3칸) · 아담한 집 800P (6칸)\n2층 집 2,000P (10칸) · 대저택 5,000P (20칸)\n*집구매 / *집업그레이드 / *내집")
         return
     if text in ("*집구매","*집업그레이드"):
         with db() as conn:
@@ -1810,11 +1810,11 @@ def handle(event):
                     result=f"💸 집 {tier}단계 구매에 {cost:,}P가 필요해."
                 else:
                     conn.execute("INSERT INTO pet_homes(group_id,user_id,tier) VALUES(%s,%s,%s) ON CONFLICT(group_id,user_id) DO UPDATE SET tier=EXCLUDED.tier",(group,user,tier))
-                    result=f"🏠 집 {tier}단계 달성! 가구 {home_tiers[tier][1]}칸\\n-{cost:,}P · 잔액 {paid[0]:,}P"
+                    result=f"🏠 집 {tier}단계 달성! 가구 {home_tiers[tier][1]}칸\n-{cost:,}P · 잔액 {paid[0]:,}P"
         reply(token,result)
         return
     if text=="*가구상점":
-        reply(token,"🪑 가구 상점\\n"+"\\n".join(f"{k}: {v:,}P" for k,v in furniture_prices.items())+"\\n*가구구매 침대 / *가구배치 침대 / *가구보관 침대")
+        reply(token,"🪑 가구 상점\n"+"\n".join(f"{k}: {v:,}P" for k,v in furniture_prices.items())+"\n*가구구매 침대 / *가구배치 침대 / *가구보관 침대")
         return
     if text=="*내집":
         with db() as conn:
@@ -1824,9 +1824,9 @@ def handle(event):
             reply(token,"🏠 아직 집이 없어. *집상점에서 시작해 줘.")
         else:
             tier=h[0]
-            reply(token,f"🏠 {name}님의 집 · {tier}단계\\n가구 배치 {sum(x[2] for x in furniture)}/{home_tiers[tier][1]}칸\\n"+("\\n".join(f"{item}: 보유 {qty}, 배치 {placed}" for item,qty,placed in furniture) if furniture else "가구 없음")+"\\n*가구상점")
+            reply(token,f"🏠 {name}님의 집 · {tier}단계\n가구 배치 {sum(x[2] for x in furniture)}/{home_tiers[tier][1]}칸\n"+("\n".join(f"{item}: 보유 {qty}, 배치 {placed}" for item,qty,placed in furniture) if furniture else "가구 없음")+"\n*가구상점")
         return
-    furniture_cmd=re.fullmatch(r"\\*(가구구매|가구배치|가구보관)\\s+([가-힣]{1,10})",text)
+    furniture_cmd=re.fullmatch(r"\*(가구구매|가구배치|가구보관)\s+([가-힣]{1,10})",text)
     if furniture_cmd:
         action,item=furniture_cmd.groups()
         if item not in furniture_prices:
