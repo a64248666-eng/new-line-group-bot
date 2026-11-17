@@ -67,6 +67,26 @@ def initialize():
             reward INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
         conn.execute("""CREATE INDEX IF NOT EXISTS idx_point_transactions_slot
             ON point_transactions(group_id,sender_id,kind,created_at)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS pet_companions (
+            group_id TEXT NOT NULL, user_id TEXT NOT NULL, species TEXT NOT NULL,
+            pet_name TEXT NOT NULL, level INTEGER NOT NULL DEFAULT 1,
+            exp INTEGER NOT NULL DEFAULT 0, evolution INTEGER NOT NULL DEFAULT 0,
+            hunger INTEGER NOT NULL DEFAULT 70, hygiene INTEGER NOT NULL DEFAULT 70,
+            happiness INTEGER NOT NULL DEFAULT 70, last_care_date TEXT,
+            feed_count INTEGER NOT NULL DEFAULT 0, bath_count INTEGER NOT NULL DEFAULT 0,
+            play_count INTEGER NOT NULL DEFAULT 0, treat_count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(group_id,user_id))""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS pet_homes (
+            group_id TEXT NOT NULL, user_id TEXT NOT NULL,
+            tier INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY(group_id,user_id))""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS pet_furniture (
+            group_id TEXT NOT NULL, user_id TEXT NOT NULL, item TEXT NOT NULL,
+            quantity INTEGER NOT NULL DEFAULT 0, placed INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(group_id,user_id,item))""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS pet_home_bonuses (
+            group_id TEXT NOT NULL, user_id TEXT NOT NULL, item TEXT NOT NULL,
+            bonus_date TEXT NOT NULL, PRIMARY KEY(group_id,user_id,item,bonus_date))""")
         conn.execute("""CREATE TABLE IF NOT EXISTS quiz_rounds (
             group_id TEXT PRIMARY KEY, question TEXT NOT NULL, answer TEXT NOT NULL,
             choices TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
@@ -1676,7 +1696,7 @@ def handle(event):
 *출석 / *내포인트 / *출석랭킹\n*오늘미션 / *미션보상 / *보물상자
 
 🛍️ 포인트 상점
-*상점 / *구매 왕관 / *인벤토리\n*선물 @친구 100
+*상점 / *구매 왕관 / *인벤토리\n🐣 펫: *펫상점 / *펫입양 강아지 / *내펫\n*펫밥 / *펫목욕 / *펫놀기 / *펫간식 / *펫진화\n🏠 집: *집상점 / *집구매 / *집업그레이드 / *내집\n*가구상점 / *가구구매 침대 / *가구배치 침대 / *가구보관 침대\n*선물 @친구 100
 
 🍜 메뉴 추천
 *점메추 / *저메추 / *메뉴추천
@@ -1695,6 +1715,155 @@ def handle(event):
 📖 *도움말 / *명령어""")
         return
     shop = {"왕관": (100, "👑"), "별": (70, "⭐"), "하트": (50, "❤️"), "트로피": (150, "🏆"), "다이아": (500, "💎"), "장미": (80, "🌹"), "케이크": (120, "🎂"), "커피": (60, "☕"), "초콜릿": (90, "🍫"), "곰인형": (180, "🧸"), "꽃다발": (220, "💐"), "반지": (350, "💍"), "메달": (250, "🏅"), "로켓": (400, "🚀"), "황금열쇠": (600, "🗝️"), "무지개": (300, "🌈"), "유니콘": (700, "🦄"), "용": (1000, "🐉")}
+    # Virtual pet and house: all charges and state changes are atomic within a transaction.
+    pet_prices = {"강아지":300, "고양이":300, "아기용":500}
+    furniture_prices = {"침대":100, "소파":150, "화분":80, "벽난로":300, "수족관":500, "피아노":800}
+    home_tiers = ((0,0),(300,3),(800,6),(2000,10),(5000,20))
+    pet_emoji = {"강아지":"🐶","고양이":"🐱","아기용":"🐲"}
+    if text == "*펫상점":
+        reply(token, "🐣 펫 입양 상점\\n"+ "\\n".join(f"{pet_emoji[k]} {k}: {v:,}P" for k,v in pet_prices.items())+"\\n입양: *펫입양 강아지\\n상태: *내펫")
+        return
+    if text.startswith("*펫입양 "):
+        species = text[len("*펫입양 "):].strip()
+        if species not in pet_prices:
+            reply(token,"🐣 *펫상점에서 입양할 펫을 선택해 줘.")
+            return
+        with db() as conn:
+            conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",("pet:"+group+":"+user,))
+            existing = conn.execute("SELECT 1 FROM pet_companions WHERE group_id=%s AND user_id=%s",(group,user)).fetchone()
+            if existing:
+                result = "🐾 이미 펫을 키우고 있어! *내펫으로 확인해 줘."
+            else:
+                paid = conn.execute("UPDATE game_points SET points=points-%s WHERE group_id=%s AND user_id=%s AND points >= %s RETURNING points",(pet_prices[species],group,user,pet_prices[species])).fetchone()
+                if not paid:
+                    result = f"💸 입양하려면 {pet_prices[species]:,}P가 필요해."
+                else:
+                    conn.execute("INSERT INTO pet_companions(group_id,user_id,species,pet_name) VALUES(%s,%s,%s,%s)",(group,user,species,species))
+                    result = f"{pet_emoji[species]} {species} 입양 성공!\\n남은 포인트: {paid[0]:,}P\\n*내펫으로 확인해 줘."
+        reply(token,result)
+        return
+    if text == "*내펫":
+        with db() as conn:
+            p=conn.execute("SELECT species,pet_name,level,exp,evolution,hunger,hygiene,happiness FROM pet_companions WHERE group_id=%s AND user_id=%s",(group,user)).fetchone()
+        if not p:
+            reply(token,"🐣 아직 펫이 없어! *펫상점에서 입양해 줘.")
+        else:
+            species,nm,lv,xp,evo,hg,hy,hp=p
+            reply(token,f"{pet_emoji.get(species,'🐾')} {nm} ({species})\\n레벨 {lv} · EXP {xp}/100 · 진화 {evo}/3\\n🍖 포만감 {hg}/100 · 🧼 청결 {hy}/100 · ❤️ 행복 {hp}/100\\n*펫밥 / *펫목욕 / *펫놀기 / *펫간식 / *펫진화")
+        return
+    if text in ("*펫밥","*펫목욕","*펫놀기","*펫간식","*펫진화"):
+        actions={"*펫밥":("feed_count",3,30,"hunger",30,10),"*펫목욕":("bath_count",3,50,"hygiene",40,10),"*펫놀기":("play_count",5,50,"happiness",30,15),"*펫간식":("treat_count",3,80,"happiness",40,20)}
+        with db() as conn:
+            conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",("pet:"+group+":"+user,))
+            p=conn.execute("SELECT level,exp,evolution,last_care_date,feed_count,bath_count,play_count,treat_count FROM pet_companions WHERE group_id=%s AND user_id=%s FOR UPDATE",(group,user)).fetchone()
+            if not p:
+                result="🐣 먼저 *펫상점에서 펫을 입양해 줘."
+            elif text == "*펫진화":
+                lv,xp,evo=p[:3]
+                required=(5,10,20)
+                if evo>=3:
+                    result="👑 이미 최종 진화를 완료했어!"
+                elif lv<required[evo]:
+                    result=f"🐾 다음 진화는 레벨 {required[evo]}부터 가능해. 현재 레벨 {lv}."
+                else:
+                    paid=conn.execute("UPDATE game_points SET points=points-500 WHERE group_id=%s AND user_id=%s AND points>=500 RETURNING points",(group,user)).fetchone()
+                    if not paid:
+                        result="💸 진화 비용 500P가 필요해."
+                    else:
+                        conn.execute("UPDATE pet_companions SET evolution=evolution+1 WHERE group_id=%s AND user_id=%s",(group,user))
+                        result=f"✨ 펫 진화 성공! {evo+1}/3단계\\n남은 포인트: {paid[0]:,}P"
+            else:
+                column,limit,cost,stat,inc,exp=actions[text]
+                count={"feed_count":p[4],"bath_count":p[5],"play_count":p[6],"treat_count":p[7]}[column] if p[3]==day else 0
+                if count>=limit:
+                    result=f"⏳ 오늘 {text[1:]}은 {limit}회까지 가능해. 내일 다시 해 줘."
+                else:
+                    paid=conn.execute("UPDATE game_points SET points=points-%s WHERE group_id=%s AND user_id=%s AND points>=%s RETURNING points",(cost,group,user,cost)).fetchone()
+                    if not paid:
+                        result=f"💸 {text[1:]} 비용은 {cost}P야."
+                    else:
+                        if p[3]!=day:
+                            conn.execute("UPDATE pet_companions SET feed_count=0,bath_count=0,play_count=0,treat_count=0,last_care_date=%s WHERE group_id=%s AND user_id=%s",(day,group,user))
+                        # Whitelisted column names only; no user-provided SQL identifiers.
+                        conn.execute(f"UPDATE pet_companions SET {column}={column}+1,{stat}=LEAST(100,{stat}+%s),level=LEAST(20,level+(exp+%s)/100),exp=(exp+%s)%%100 WHERE group_id=%s AND user_id=%s",(inc,exp,exp,group,user))
+                        result=f"🐾 {text[1:]} 완료! 경험치 +{exp}\\n포인트 -{cost}P · 잔액 {paid[0]:,}P\\n오늘 {count+1}/{limit}회"
+        reply(token,result)
+        return
+    if text == "*집상점":
+        reply(token,"🏠 집 구매/업그레이드\\n오두막 300P (3칸) · 아담한 집 800P (6칸)\\n2층 집 2,000P (10칸) · 대저택 5,000P (20칸)\\n*집구매 / *집업그레이드 / *내집")
+        return
+    if text in ("*집구매","*집업그레이드"):
+        with db() as conn:
+            conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",("home:"+group+":"+user,))
+            h=conn.execute("SELECT tier FROM pet_homes WHERE group_id=%s AND user_id=%s FOR UPDATE",(group,user)).fetchone()
+            if text=="*집구매" and h:
+                result="🏠 이미 집이 있어. *집업그레이드를 사용해 줘."
+            elif text=="*집업그레이드" and not h:
+                result="🏠 먼저 *집구매로 오두막을 구매해 줘."
+            elif h and h[0]>=4:
+                result="🏰 이미 최고 등급 대저택이야!"
+            else:
+                tier=(h[0]+1) if h else 1
+                cost=home_tiers[tier][0]
+                paid=conn.execute("UPDATE game_points SET points=points-%s WHERE group_id=%s AND user_id=%s AND points>=%s RETURNING points",(cost,group,user,cost)).fetchone()
+                if not paid:
+                    result=f"💸 집 {tier}단계 구매에 {cost:,}P가 필요해."
+                else:
+                    conn.execute("INSERT INTO pet_homes(group_id,user_id,tier) VALUES(%s,%s,%s) ON CONFLICT(group_id,user_id) DO UPDATE SET tier=EXCLUDED.tier",(group,user,tier))
+                    result=f"🏠 집 {tier}단계 달성! 가구 {home_tiers[tier][1]}칸\\n-{cost:,}P · 잔액 {paid[0]:,}P"
+        reply(token,result)
+        return
+    if text=="*가구상점":
+        reply(token,"🪑 가구 상점\\n"+"\\n".join(f"{k}: {v:,}P" for k,v in furniture_prices.items())+"\\n*가구구매 침대 / *가구배치 침대 / *가구보관 침대")
+        return
+    if text=="*내집":
+        with db() as conn:
+            h=conn.execute("SELECT tier FROM pet_homes WHERE group_id=%s AND user_id=%s",(group,user)).fetchone()
+            furniture=conn.execute("SELECT item,quantity,placed FROM pet_furniture WHERE group_id=%s AND user_id=%s AND quantity>0 ORDER BY item",(group,user)).fetchall()
+        if not h:
+            reply(token,"🏠 아직 집이 없어. *집상점에서 시작해 줘.")
+        else:
+            tier=h[0]
+            reply(token,f"🏠 {name}님의 집 · {tier}단계\\n가구 배치 {sum(x[2] for x in furniture)}/{home_tiers[tier][1]}칸\\n"+("\\n".join(f"{item}: 보유 {qty}, 배치 {placed}" for item,qty,placed in furniture) if furniture else "가구 없음")+"\\n*가구상점")
+        return
+    furniture_cmd=re.fullmatch(r"\\*(가구구매|가구배치|가구보관)\\s+([가-힣]{1,10})",text)
+    if furniture_cmd:
+        action,item=furniture_cmd.groups()
+        if item not in furniture_prices:
+            reply(token,"🪑 가구 이름을 확인해 줘. *가구상점")
+            return
+        with db() as conn:
+            conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",("home:"+group+":"+user,))
+            h=conn.execute("SELECT tier FROM pet_homes WHERE group_id=%s AND user_id=%s",(group,user)).fetchone()
+            if not h:
+                result="🏠 먼저 *집구매로 집을 마련해 줘."
+            else:
+                row=conn.execute("SELECT quantity,placed FROM pet_furniture WHERE group_id=%s AND user_id=%s AND item=%s FOR UPDATE",(group,user,item)).fetchone()
+                qty,placed=row if row else (0,0)
+                if action=="가구구매":
+                    cost=furniture_prices[item]
+                    paid=conn.execute("UPDATE game_points SET points=points-%s WHERE group_id=%s AND user_id=%s AND points>=%s RETURNING points",(cost,group,user,cost)).fetchone()
+                    if not paid:
+                        result=f"💸 {item} 구매에는 {cost}P가 필요해."
+                    else:
+                        conn.execute("INSERT INTO pet_furniture(group_id,user_id,item,quantity) VALUES(%s,%s,%s,1) ON CONFLICT(group_id,user_id,item) DO UPDATE SET quantity=pet_furniture.quantity+1",(group,user,item))
+                        result=f"🪑 {item} 구매 완료! -{cost}P · 잔액 {paid[0]:,}P"
+                elif action=="가구배치":
+                    used=conn.execute("SELECT COALESCE(SUM(placed),0) FROM pet_furniture WHERE group_id=%s AND user_id=%s",(group,user)).fetchone()[0]
+                    if qty<=placed:
+                        result="🪑 배치할 여분의 가구가 없어."
+                    elif used>=home_tiers[h[0]][1]:
+                        result="🏠 가구 배치 공간이 부족해. 집을 업그레이드해 줘."
+                    else:
+                        conn.execute("UPDATE pet_furniture SET placed=placed+1 WHERE group_id=%s AND user_id=%s AND item=%s",(group,user,item))
+                        result=f"✨ {item} 배치 완료! {used+1}/{home_tiers[h[0]][1]}칸"
+                elif placed<1:
+                    result="🪑 보관할 배치 가구가 없어."
+                else:
+                    conn.execute("UPDATE pet_furniture SET placed=placed-1 WHERE group_id=%s AND user_id=%s AND item=%s",(group,user,item))
+                    result=f"📦 {item} 1개 보관 완료!"
+        reply(token,result)
+        return
     if text == "*상점":
         reply(token, "🛍️ 레드봇 포인트 상점\n"+
               "\n".join(f"{emoji} {item}: {price:,}P" for item,(price,emoji) in shop.items())+
