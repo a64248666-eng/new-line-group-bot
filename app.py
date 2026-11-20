@@ -38,11 +38,6 @@ def initialize():
             group_id TEXT NOT NULL, user_id TEXT NOT NULL, item_name TEXT NOT NULL,
             quantity INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY(group_id,user_id,item_name))""")
-        conn.execute("""CREATE TABLE IF NOT EXISTS hourly_alert_settings (
-            group_id TEXT PRIMARY KEY, enabled BOOLEAN NOT NULL DEFAULT FALSE)""")
-        conn.execute("""CREATE TABLE IF NOT EXISTS hourly_alert_deliveries (
-            group_id TEXT NOT NULL, hour_key TEXT NOT NULL,
-            PRIMARY KEY(group_id,hour_key))""")
         conn.execute("""CREATE TABLE IF NOT EXISTS daily_missions (
             group_id TEXT NOT NULL, user_id TEXT NOT NULL, mission_date TEXT NOT NULL,
             progress INTEGER NOT NULL DEFAULT 0, last_counted_at TIMESTAMPTZ,
@@ -1571,6 +1566,20 @@ def handle(event):
         is_admin = user in ADMINS or conn.execute(
             "SELECT 1 FROM group_admins WHERE group_id=%s AND user_id=%s", (group,user)
         ).fetchone() is not None
+    if text in ("/관리자목록", "*관리자목록"):
+        if not is_admin:
+            reply(token, "⛔ 관리자 목록은 등록된 관리자만 확인할 수 있어.")
+            return
+        with db() as conn:
+            registered = {row[0] for row in conn.execute(
+                "SELECT user_id FROM group_admins WHERE group_id=%s", (group,)).fetchall()}
+        all_admins = sorted(registered | ADMINS)
+        lines = [f"🛡️ 이 단체방 관리자 목록 ({len(all_admins)}명)"]
+        for number, uid in enumerate(all_admins, 1):
+            label = " · 최초 설정 관리자" if uid in ADMINS else ""
+            lines.append(f"{number}. {profile(group,uid)}{label}")
+        reply(token, "\n".join(lines) if all_admins else "🛡️ 등록된 관리자가 없어.")
+        return
     admin_command = re.fullmatch(r"/관리자(추가|삭제)(?:\s+.*)?", text)
     if admin_command:
         if not is_admin:
@@ -1633,20 +1642,6 @@ def handle(event):
                     DO UPDATE SET points=game_points.points+EXCLUDED.points""", (group,target,amount))
         reply(token, f"🎁 관리자 포인트 지급 완료!\n대상: {len(targets)}명\n1명당 +{amount:,}P")
         return
-    if text in ("/정각알림켜기", "/정각알림끄기", "/정각알림상태"):
-        if text != "/정각알림상태" and not is_admin:
-            reply(token, "⛔ 정각 알림 켜기·끄기는 관리자만 가능해.")
-            return
-        with db() as conn:
-            if text != "/정각알림상태":
-                enabled = text == "/정각알림켜기"
-                conn.execute("""INSERT INTO hourly_alert_settings(group_id,enabled)
-                    VALUES(%s,%s) ON CONFLICT(group_id)
-                    DO UPDATE SET enabled=EXCLUDED.enabled""", (group,enabled))
-            row = conn.execute("SELECT enabled FROM hourly_alert_settings WHERE group_id=%s",(group,)).fetchone()
-        status = "켜짐 🔔" if row and row[0] else "꺼짐 🔕"
-        reply(token, f"⏰ 정각 알림: {status}\n한국 시간 기준 오전 8시~자정(00시) 매 정각\n관리자 명령어: /정각알림켜기 · /정각알림끄기")
-        return
     if text in ("*도움말", "*명령어"):
         reply(token, """🤖 RED BOT 3.0 전체 명령어
 
@@ -1660,7 +1655,7 @@ def handle(event):
 /남초추가 @멘션 /남초삭제 @멘션 /남초목록
 /여초추가 @멘션 /여초삭제 @멘션 /여초목록
 ※ 남초·여초 명단 수정/조회는 관리자만
-/관리자추가 @멘션 /관리자삭제 @멘션 (관리자만)
+/관리자추가 @멘션 /관리자삭제 @멘션 /관리자목록 (관리자만)
 
 🗺️ 지역 명단 (모든 멤버 수정 가능)
 /지역추가 서울 홍길동
@@ -1686,11 +1681,6 @@ def handle(event):
 
 🤖 AI·날씨
 !질문내용 (예: !내일 서울 날씨)
-
-⏰ 정각 알림
-/정각알림상태
-/정각알림켜기 /정각알림끄기 (관리자)
-※ 오전 8시~자정, 예약 실행 연결 전 자동 발송 안 됨
 
 📖 *도움말 / *명령어""")
         return
@@ -2140,46 +2130,6 @@ def ensure_db():
         if not _ready:
             initialize()
             _ready = True
-
-@app.post("/internal/hourly-alert")
-def hourly_alert():
-    secret = os.getenv("HOURLY_ALERT_SECRET", "")
-    supplied = request.headers.get("X-Hourly-Secret", "")
-    if not secret or not hmac.compare_digest(secret,supplied):
-        abort(403)
-    initialize()
-    now = datetime.now(KST)
-    if not (now.hour == 0 or 8 <= now.hour <= 23):
-        return {"status":"quiet_hours","sent":0}
-    hour_key = now.strftime("%Y-%m-%d-%H")
-    hour_label = f"{'오전' if now.hour < 12 else '오후'} {now.hour % 12 or 12}시"
-    with db() as conn:
-        groups = [row[0] for row in conn.execute(
-            "SELECT group_id FROM hourly_alert_settings WHERE enabled=TRUE").fetchall()]
-    sent = 0
-    for group_id in groups:
-        try:
-            with db() as conn:
-                # Serialize hourly attempts across overlapping scheduler executions.
-                conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (group_id+":hourly"))
-                exists = conn.execute(
-                    "SELECT 1 FROM hourly_alert_deliveries WHERE group_id=%s AND hour_key=%s",
-                    (group_id,hour_key)).fetchone()
-                enabled = conn.execute(
-                    "SELECT enabled FROM hourly_alert_settings WHERE group_id=%s",
-                    (group_id,)).fetchone()
-                if exists or not enabled or not enabled[0]:
-                    continue
-                payload = {"to":group_id,"messages":[{"type":"text",
-                    "text":f"🔔 레드봇 3.0 정각 알림\n🕒 현재 {hour_label} 정각입니다!\n❤️ 즐거운 시간 보내세요!"}]}
-                response = requests.post(API+"/message/push",json=payload,headers=headers(),timeout=15)
-                response.raise_for_status()
-                conn.execute("INSERT INTO hourly_alert_deliveries(group_id,hour_key) VALUES(%s,%s)",
-                             (group_id,hour_key))
-                sent += 1
-        except Exception:
-            app.logger.exception("Hourly alert failed for group")
-    return {"status":"ok","hour":hour_key,"sent":sent}
 
 @app.get("/")
 def health():
