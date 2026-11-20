@@ -65,6 +65,7 @@ def initialize():
         conn.execute("""CREATE TABLE IF NOT EXISTS quiz_rounds (
             group_id TEXT PRIMARY KEY, question TEXT NOT NULL, answer TEXT NOT NULL,
             choices TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
+        conn.execute("ALTER TABLE quiz_rounds ADD COLUMN IF NOT EXISTS difficulty TEXT NOT NULL DEFAULT '하'")
 
 
 def headers():
@@ -1499,6 +1500,27 @@ MATH_QUESTIONS = tuple(item for item in QUIZ_BANK if item[0].startswith("계산:
 GENERAL_KNOWLEDGE_QUESTIONS = tuple(item for item in QUIZ_BANK if item not in MATH_QUESTIONS) + GENERAL_KNOWLEDGE_EXTRA
 QUIZ_CATEGORIES = ((MATH_QUESTIONS, 30), (GENERAL_KNOWLEDGE_QUESTIONS, 50), (NONSENSE_QUESTIONS, 20))
 
+def quiz_difficulty(question):
+    """Estimate difficulty using stable question-text heuristics."""
+    if question.startswith("계산:"):
+        nums = [int(n) for n in re.findall(r"\d+", question)]
+        if any(n >= 100 for n in nums):
+            return "상"
+        if any(n >= 20 for n in nums) or "×" in question or "÷" in question:
+            return "중"
+        return "하"
+    if any(question == q[0] for q in NONSENSE_QUESTIONS):
+        return "중" if len(question) >= 24 else "하"
+    hard = ("연도", "조약", "법칙", "정리", "원소", "화학", "왕조", "철학", "경제", "물리", "확률", "헌법", "위도", "경도")
+    medium = ("수도", "뜻은", "의미", "작가", "발명", "발견", "나라", "역사", "행성", "세계", "인물", "문화", "과학")
+    if any(term in question for term in hard):
+        return "상" if len(question) >= 22 else "중"
+    if any(term in question for term in medium):
+        return "중"
+    return "상" if len(question) >= 38 else "중" if len(question) >= 22 else "하"
+
+QUIZ_REWARDS = {"상": 100, "중": 50, "하": 10}
+
 def choose_quiz_question(recent):
     # Draw category by 30:50:20 weights, then a question excluding recent history.
     eligible = [(pool, weight) for pool, weight in QUIZ_CATEGORIES if any(q[0] not in recent for q in pool)]
@@ -1897,21 +1919,23 @@ def handle(event):
             conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", ("quiz:" + group,))
             recent = {row[0] for row in conn.execute("SELECT question FROM quiz_history WHERE group_id=%s ORDER BY issued_at DESC LIMIT 200", (group,)).fetchall()}
             question, choices, correct = choose_quiz_question(recent)
+            difficulty = quiz_difficulty(question)
+            reward = QUIZ_REWARDS[difficulty]
             conn.execute("INSERT INTO quiz_history(group_id,question,issued_at) VALUES(%s,%s,NOW()) ON CONFLICT(group_id,question) DO UPDATE SET issued_at=NOW()", (group,question))
             conn.execute("DELETE FROM quiz_history WHERE group_id=%s AND question NOT IN (SELECT question FROM quiz_history WHERE group_id=%s ORDER BY issued_at DESC LIMIT 200)", (group,group))
-            conn.execute("""INSERT INTO quiz_rounds(group_id,question,answer,choices,created_at)
-                VALUES(%s,%s,%s,%s,NOW())
+            conn.execute("""INSERT INTO quiz_rounds(group_id,question,answer,choices,difficulty,created_at)
+                VALUES(%s,%s,%s,%s,%s,NOW())
                 ON CONFLICT(group_id) DO UPDATE SET question=EXCLUDED.question,
-                answer=EXCLUDED.answer,choices=EXCLUDED.choices,created_at=NOW()""",
-                (group,question,str(correct),"|".join(choices)))
-        reply(token, "🧠 레드봇 퀴즈!\n"+question+"\n"+
+                answer=EXCLUDED.answer,choices=EXCLUDED.choices,difficulty=EXCLUDED.difficulty,created_at=NOW()""",
+                (group,question,str(correct),"|".join(choices),difficulty))
+        reply(token, f"🧠 레드봇 퀴즈!\n🏷️ 난이도: {difficulty} · 정답 보상: +{reward}P\n"+question+"\n"+
               "\n".join(f"{i}. {choice}" for i,choice in enumerate(choices,1))+
-              "\n\n정답은 *정답 1 처럼 입력해 줘!\n⏳ 제한시간 10분 · 정답 +10P\n※ 관리자만 출제 가능 · 하루 출제 횟수 무제한 · 새 퀴즈는 이전 문제를 교체해.")
+              "\n\n정답은 *정답 1 처럼 입력해 줘!\n⏳ 제한시간 10분 · 상 100P / 중 50P / 하 10P\n※ 관리자만 출제 가능 · 하루 출제 횟수 무제한 · 새 퀴즈는 이전 문제를 교체해.")
         return
     answer_match = re.fullmatch(r"\*정답\s+([1-4])",text)
     if answer_match:
         with db() as conn:
-            row = conn.execute("""SELECT answer,created_at FROM quiz_rounds
+            row = conn.execute("""SELECT answer,created_at,difficulty FROM quiz_rounds
                 WHERE group_id=%s FOR UPDATE""",(group,)).fetchone()
             if not row:
                 result = "진행 중인 퀴즈가 없어. *퀴즈로 시작해 줘!"
@@ -1924,12 +1948,13 @@ def handle(event):
                     result = "❌ 아쉽지만 오답이야! 다시 도전해 봐."
                 else:
                     conn.execute("DELETE FROM quiz_rounds WHERE group_id=%s",(group,))
+                    reward = QUIZ_REWARDS.get(row[2], 10)
                     conn.execute("""INSERT INTO game_points(group_id,user_id,points)
-                        VALUES(%s,%s,10) ON CONFLICT(group_id,user_id)
-                        DO UPDATE SET points=game_points.points+10""",(group,user))
+                        VALUES(%s,%s,%s) ON CONFLICT(group_id,user_id)
+                        DO UPDATE SET points=game_points.points+EXCLUDED.points""",(group,user,reward))
                     points = conn.execute("SELECT points FROM game_points WHERE group_id=%s AND user_id=%s",
                                           (group,user)).fetchone()[0]
-                    result = f"🎉 정답! {name}님 +10P 획득!\n💰 현재 포인트: {points:,}P"
+                    result = f"🎉 정답! {name}님 [{row[2]}] +{reward}P 획득!\n💰 현재 포인트: {points:,}P"
         reply(token,result)
         return
     # Region roster: administrator-managed plain names, without LINE mentions.
