@@ -1700,6 +1700,36 @@ def handle(event):
               "\n".join(f"{emoji} {item}: {price:,}P" for item,(price,emoji) in shop.items())+
               "\n\n구매: *구매 왕관\n보유 아이템: *인벤토리\n포인트 확인: *내포인트\n🎁 선물: *선물 @친구 100\n※ 상점 물품은 인벤토리에 쌓이는 수집용 가상 아이템이야. 현금 가치나 별도 사용 효과는 없어.")
         return
+    if text.startswith("*포인트차감"):
+        if not is_admin:
+            reply(token, "⛔ 포인트 차감은 등록된 관리자만 사용할 수 있어.")
+            return
+        deduction = re.fullmatch(r"\*포인트차감\s+.+?\s+(\d{1,9})", text)
+        mentions = (message.get("mention") or {}).get("mentionees") or []
+        targets = list(dict.fromkeys(m.get("userId") for m in mentions if m.get("userId")))
+        if not deduction or len(targets) != 1:
+            reply(token, "💰 사용법: *포인트차감 @친구 100\n실제 LINE @멘션으로 한 명만 지정해 줘.")
+            return
+        recipient, requested = targets[0], int(deduction.group(1))
+        if not 1 <= requested <= 100000000:
+            reply(token, "⛔ 차감 금액은 1~100,000,000P 사이여야 해.")
+            return
+        with db() as conn:
+            # A row lock serializes concurrent deductions and prevents negative balances.
+            row = conn.execute("SELECT points FROM game_points WHERE group_id=%s AND user_id=%s FOR UPDATE",(group,recipient)).fetchone()
+            current = max(0,row[0]) if row else 0
+            actual = min(current,requested)
+            if actual == 0:
+                result = "💰 대상 회원의 보유 포인트가 0P라 차감하지 않았어."
+            else:
+                balance = conn.execute("UPDATE game_points SET points=points-%s WHERE group_id=%s AND user_id=%s AND points >= %s RETURNING points",(actual,group,recipient,actual)).fetchone()
+                if not balance:
+                    raise RuntimeError("Point deduction failed after row lock")
+                conn.execute("""INSERT INTO point_transactions(event_id,group_id,sender_id,recipient_id,kind,amount)
+                    VALUES(%s,%s,%s,%s,'admin_deduction',%s)""",(eid,group,user,recipient,actual))
+                result = f"💰 관리자 포인트 차감 완료!\n대상: {profile(group,recipient)}\n차감: -{actual:,}P"+(f" (요청 {requested:,}P)" if actual < requested else "")+f"\n남은 포인트: {balance[0]:,}P"
+        reply(token,result)
+        return
     if text.startswith("*선물"):
         # Require exactly one real LINE mention; never resolve a recipient from display name text.
         gift = re.fullmatch(r"\*선물\s+.+?\s+(\d{1,7})", text)
