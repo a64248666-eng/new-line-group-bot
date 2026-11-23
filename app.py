@@ -462,10 +462,6 @@ def handle(event):
 /지역삭제 서울 홍길동
 /서울 /부산 등 지역명 /지역목록
 
-🎲 게임·추첨
-*주사위 / *가위바위보
-*랜덤추첨 / *랜덤추첨 3
-
 🍜 메뉴 추천
 *점메추 / *저메추 / *메뉴추천
 
@@ -601,34 +597,6 @@ def handle(event):
               f"💬 총 메시지: {week_row[0]:,}개\n"
               f"👥 활동 인원: {week_row[1]:,}명\n"
               f"※ 레드봇이 수집한 텍스트 메시지 기준. 시간대는 업데이트 이후 기록부터 집계돼.")
-        return
-    if text == "*주사위":
-        reply(token, f"🎲 주사위 결과: {secrets.randbelow(6) + 1}!")
-        return
-    if text == "*가위바위보":
-        reply(token, f"✊✌️🖐️ 레드봇의 선택: {secrets.choice(('가위 ✌️', '바위 ✊', '보 🖐️'))}")
-        return
-    draw_match = re.fullmatch(r"\*랜덤추첨(?:\s+(\d+))?", text)
-    if draw_match:
-        requested = int(draw_match.group(1) or "1")
-        if not 1 <= requested <= 20:
-            reply(token, "추첨 인원은 1~20명으로 입력해 줘. 예: *랜덤추첨 3")
-            return
-        with db() as conn:
-            rows = conn.execute(
-                """SELECT user_id, display_name FROM member_profiles
-                   WHERE group_id=%s ORDER BY user_id""", (group,)).fetchall()
-        if not rows:
-            reply(token, "아직 추첨할 참여자가 없어.")
-            return
-        if requested > len(rows):
-            reply(token, f"추첨 대상은 {len(rows)}명이야. {len(rows)}명 이하로 입력해 줘.")
-            return
-        winners = list(rows)
-        secrets.SystemRandom().shuffle(winners)
-        winners = winners[:requested]
-        result = "\n".join(f"{i}. {name}" for i, (_, name) in enumerate(winners, 1))
-        reply(token, f"🎉 랜덤추첨 결과 ({requested}명 / 대상 {len(rows)}명)\n{result}\n※ 이 단체방에서 레드봇이 기록한 참여자 기준")
         return
     if text == "*마딧수":
         reply(token, counts(group, day))
