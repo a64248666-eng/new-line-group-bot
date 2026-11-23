@@ -34,34 +34,11 @@ def initialize():
         conn.execute("CREATE TABLE IF NOT EXISTS processed_events (event_id TEXT PRIMARY KEY,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())")
         conn.execute("CREATE TABLE IF NOT EXISTS region_members (group_id TEXT NOT NULL, region TEXT NOT NULL, member_name TEXT NOT NULL, PRIMARY KEY(group_id,region,member_name))")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_region_members_group_region ON region_members(group_id,region)")
-        conn.execute("""CREATE TABLE IF NOT EXISTS point_inventory (
-            group_id TEXT NOT NULL, user_id TEXT NOT NULL, item_name TEXT NOT NULL,
-            quantity INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY(group_id,user_id,item_name))""")
-        conn.execute("""CREATE TABLE IF NOT EXISTS daily_missions (
-            group_id TEXT NOT NULL, user_id TEXT NOT NULL, mission_date TEXT NOT NULL,
-            progress INTEGER NOT NULL DEFAULT 0, last_counted_at TIMESTAMPTZ,
-            claimed BOOLEAN NOT NULL DEFAULT FALSE,
-            PRIMARY KEY(group_id,user_id,mission_date))""")
-        conn.execute("""CREATE TABLE IF NOT EXISTS daily_treasure (
-            group_id TEXT NOT NULL, user_id TEXT NOT NULL, treasure_date TEXT NOT NULL,
-            reward INTEGER NOT NULL,
-            PRIMARY KEY(group_id,user_id,treasure_date))""")
-        conn.execute("""CREATE TABLE IF NOT EXISTS game_points (
-            group_id TEXT NOT NULL, user_id TEXT NOT NULL,
-            points INTEGER NOT NULL DEFAULT 0, attendance_days INTEGER NOT NULL DEFAULT 0,
-            last_attendance TEXT, PRIMARY KEY(group_id,user_id))""")
         conn.execute("""CREATE TABLE IF NOT EXISTS quiz_daily_limits (
             group_id TEXT NOT NULL, quiz_date TEXT NOT NULL,
             issued_count INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY(group_id,quiz_date))""")
         conn.execute("""CREATE TABLE IF NOT EXISTS quiz_history (group_id TEXT NOT NULL, question TEXT NOT NULL, issued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(group_id,question))""")
-        conn.execute("""CREATE TABLE IF NOT EXISTS point_transactions (
-            event_id TEXT PRIMARY KEY, group_id TEXT NOT NULL, sender_id TEXT NOT NULL,
-            recipient_id TEXT, kind TEXT NOT NULL, amount INTEGER NOT NULL,
-            reward INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
-        conn.execute("""CREATE INDEX IF NOT EXISTS idx_point_transactions_slot
-            ON point_transactions(group_id,sender_id,kind,created_at)""")
         conn.execute("""CREATE TABLE IF NOT EXISTS quiz_rounds (
             group_id TEXT PRIMARY KEY, question TEXT NOT NULL, answer TEXT NOT NULL,
             choices TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
@@ -1519,8 +1496,6 @@ def quiz_difficulty(question):
         return "중"
     return "상" if len(question) >= 38 else "중" if len(question) >= 22 else "하"
 
-QUIZ_REWARDS = {"상": 100, "중": 50, "하": 10}
-
 def choose_quiz_question(recent):
     # Draw category by 30:50:20 weights, then a question excluding recent history.
     eligible = [(pool, weight) for pool, weight in QUIZ_CATEGORIES if any(q[0] not in recent for q in pool)]
@@ -1533,12 +1508,6 @@ def choose_quiz_question(recent):
             return secrets.choice(available if available else pool)
         draw -= weight
     raise RuntimeError("No quiz questions available")
-
-def game_stats(group, user):
-    with db() as conn:
-        return conn.execute(
-            "SELECT points,attendance_days,last_attendance FROM game_points WHERE group_id=%s AND user_id=%s",
-            (group,user)).fetchone()
 
 def daily_fortune(group, user, day):
     import hashlib
@@ -1573,17 +1542,6 @@ def handle(event):
             ON CONFLICT(group_id,user_id) DO UPDATE SET display_name=EXCLUDED.display_name,updated_at=NOW()""", (group,user,name))
         conn.execute("""INSERT INTO message_events(event_id,group_id,user_id,display_name,message_date,message_hour)
             VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (eid,group,user,name,day,datetime.now(KST).hour))
-    # Count ordinary conversation only, once per 60 seconds, at most 30/day.
-    if text and not text.startswith(("*", "/", "!")) and len(re.sub(r"\s+", "", text)) >= 4:
-        with db() as conn:
-            conn.execute("""INSERT INTO daily_missions(group_id,user_id,mission_date,progress,last_counted_at)
-                VALUES(%s,%s,%s,1,NOW())
-                ON CONFLICT(group_id,user_id,mission_date) DO UPDATE
-                SET progress=daily_missions.progress+1,last_counted_at=NOW()
-                WHERE daily_missions.progress < 30
-                  AND (daily_missions.last_counted_at IS NULL
-                       OR daily_missions.last_counted_at <= NOW()-INTERVAL '60 seconds')""",
-                (group,user,day))
     with db() as conn:
         is_admin = user in ADMINS or conn.execute(
             "SELECT 1 FROM group_admins WHERE group_id=%s AND user_id=%s", (group,user)
@@ -1635,35 +1593,6 @@ def handle(event):
               (f"\n최초 설정 관리자는 변경 불가: {protected}명" if protected else "") +
               "\n이 단체방에만 적용돼.")
         return
-    if text == "/포인트추가" or text.startswith("/포인트추가 "):
-        if not is_admin:
-            reply(token, "⛔ 포인트 지급은 관리자만 가능해.")
-            return
-        amount_match = re.fullmatch(r"/포인트추가\s+([0-9]{1,7})(?:\s+.*)?", text)
-        if not amount_match:
-            reply(token, "사용법: /포인트추가 500 (본인) 또는 /포인트추가 500 @멤버\n※ 1~1,000,000P까지 지급 가능")
-            return
-        amount = int(amount_match.group(1))
-        if not 1 <= amount <= 1000000:
-            reply(token, "⛔ 지급 금액은 1~1,000,000P 사이로 입력해 줘.")
-            return
-        targets = list(dict.fromkeys(
-            m["userId"] for m in (message.get("mention") or {}).get("mentionees", [])
-            if m.get("userId")
-        ))
-        if not targets:
-            if text != f"/포인트추가 {amount_match.group(1)}":
-                reply(token, "멘션 대상이 확인되지 않아. LINE에서 실제 멤버를 멘션하거나, 본인 지급은 /포인트추가 500처럼 입력해 줘.")
-                return
-            targets = [user]
-        with db() as conn:
-            for target in targets:
-                conn.execute("""INSERT INTO game_points(group_id,user_id,points)
-                    VALUES(%s,%s,%s)
-                    ON CONFLICT(group_id,user_id)
-                    DO UPDATE SET points=game_points.points+EXCLUDED.points""", (group,target,amount))
-        reply(token, f"🎁 관리자 포인트 지급 완료!\n대상: {len(targets)}명\n1명당 +{amount:,}P")
-        return
     if text in ("*도움말", "*명령어"):
         reply(token, """🤖 RED BOT 3.0 전체 명령어
 
@@ -1689,12 +1618,6 @@ def handle(event):
 *랜덤추첨 / *랜덤추첨 3
 *퀴즈 (관리자 출제·횟수 무제한) / *정답 1
 
-🏆 출석·포인트
-*출석 / *내포인트 / *출석랭킹\n*오늘미션 / *미션보상 / *보물상자
-
-🛍️ 포인트 상점
-*상점 / *구매 왕관 / *인벤토리\n*선물 @친구 100
-
 🍜 메뉴 추천
 *점메추 / *저메추 / *메뉴추천
 
@@ -1705,204 +1628,6 @@ def handle(event):
 !질문내용 (예: !내일 서울 날씨)
 
 📖 *도움말 / *명령어""")
-        return
-    shop = {"왕관": (100, "👑"), "별": (70, "⭐"), "하트": (50, "❤️"), "트로피": (150, "🏆"), "다이아": (500, "💎"), "장미": (80, "🌹"), "케이크": (120, "🎂"), "커피": (60, "☕"), "초콜릿": (90, "🍫"), "곰인형": (180, "🧸"), "꽃다발": (220, "💐"), "반지": (350, "💍"), "메달": (250, "🏅"), "로켓": (400, "🚀"), "황금열쇠": (600, "🗝️"), "무지개": (300, "🌈"), "유니콘": (700, "🦄"), "용": (1000, "🐉"), "무제한티켓": (100000000, "🎟")}
-    if text == "*상점":
-        reply(token, "🛍️ 레드봇 포인트 상점\n"+
-              "\n".join(f"{emoji} {item}: {price:,}P" for item,(price,emoji) in shop.items())+
-              "\n\n구매: *구매 왕관 (티켓: *구매 무제한티켓)\n보유 아이템: *인벤토리\n포인트 확인: *내포인트\n🎁 선물: *선물 @친구 100\n※ 상점 물품은 인벤토리에 쌓이는 수집용 가상 아이템이야. 현금 가치나 별도 사용 효과는 없어.")
-        return
-    if text.startswith("*포인트차감"):
-        if not is_admin:
-            reply(token, "⛔ 포인트 차감은 등록된 관리자만 사용할 수 있어.")
-            return
-        deduction = re.fullmatch(r"\*포인트차감\s+.+?\s+(\d{1,9})", text)
-        mentions = (message.get("mention") or {}).get("mentionees") or []
-        targets = list(dict.fromkeys(m.get("userId") for m in mentions if m.get("userId")))
-        if not deduction or len(targets) != 1:
-            reply(token, "💰 사용법: *포인트차감 @친구 100\n실제 LINE @멘션으로 한 명만 지정해 줘.")
-            return
-        recipient, requested = targets[0], int(deduction.group(1))
-        if not 1 <= requested <= 100000000:
-            reply(token, "⛔ 차감 금액은 1~100,000,000P 사이여야 해.")
-            return
-        with db() as conn:
-            # A row lock serializes concurrent deductions and prevents negative balances.
-            row = conn.execute("SELECT points FROM game_points WHERE group_id=%s AND user_id=%s FOR UPDATE",(group,recipient)).fetchone()
-            current = max(0,row[0]) if row else 0
-            actual = min(current,requested)
-            if actual == 0:
-                result = "💰 대상 회원의 보유 포인트가 0P라 차감하지 않았어."
-            else:
-                balance = conn.execute("UPDATE game_points SET points=points-%s WHERE group_id=%s AND user_id=%s AND points >= %s RETURNING points",(actual,group,recipient,actual)).fetchone()
-                if not balance:
-                    raise RuntimeError("Point deduction failed after row lock")
-                conn.execute("""INSERT INTO point_transactions(event_id,group_id,sender_id,recipient_id,kind,amount)
-                    VALUES(%s,%s,%s,%s,'admin_deduction',%s)""",(eid,group,user,recipient,actual))
-                result = f"💰 관리자 포인트 차감 완료!\n대상: {profile(group,recipient)}\n차감: -{actual:,}P"+(f" (요청 {requested:,}P)" if actual < requested else "")+f"\n남은 포인트: {balance[0]:,}P"
-        reply(token,result)
-        return
-    if text.startswith("*선물"):
-        # Require exactly one real LINE mention; never resolve a recipient from display name text.
-        gift = re.fullmatch(r"\*선물\s+.+?\s+(\d{1,7})", text)
-        mentions = (message.get("mention") or {}).get("mentionees") or []
-        targets = list(dict.fromkeys(m.get("userId") for m in mentions if m.get("userId")))
-        if not gift or len(targets) != 1:
-            reply(token, "🎁 사용법: *선물 @친구 100\nLINE의 실제 @멘션으로 받는 사람 한 명을 지정해 줘.")
-            return
-        recipient, amount = targets[0], int(gift.group(1))
-        if recipient == user or not 1 <= amount <= 100000:
-            reply(token, "🎁 본인에게는 선물할 수 없어. 선물은 1~100,000P까지 가능해.")
-            return
-        with db() as conn:
-            # Event IDs are globally unique and processed_events already deduplicates webhook retries.
-            # Conditional debit prevents negative balances during concurrent commands.
-            balance = conn.execute("""UPDATE game_points SET points=points-%s
-                WHERE group_id=%s AND user_id=%s AND points >= %s RETURNING points""",
-                (amount,group,user,amount)).fetchone()
-            if balance:
-                conn.execute("""INSERT INTO game_points(group_id,user_id,points)
-                    VALUES(%s,%s,%s) ON CONFLICT(group_id,user_id)
-                    DO UPDATE SET points=game_points.points+EXCLUDED.points""",(group,recipient,amount))
-                conn.execute("""INSERT INTO point_transactions(event_id,group_id,sender_id,recipient_id,kind,amount)
-                    VALUES(%s,%s,%s,%s,'gift',%s)""",(eid,group,user,recipient,amount))
-                result = f"🎁 {name}님이 {amount:,}P 선물했어!\n💰 남은 포인트: {balance[0]:,}P"
-            else:
-                current = conn.execute("SELECT points FROM game_points WHERE group_id=%s AND user_id=%s",(group,user)).fetchone()
-                result = f"💸 선물할 포인트가 부족해!\n보유: {(current[0] if current else 0):,}P / 필요: {amount:,}P"
-        reply(token,result)
-        return
-    if text == "*인벤토리":
-        with db() as conn:
-            items = conn.execute("""SELECT item_name,quantity FROM point_inventory
-                WHERE group_id=%s AND user_id=%s AND quantity>0 ORDER BY item_name""",
-                (group,user)).fetchall()
-        reply(token, f"🎒 {name}님의 인벤토리\n"+
-              ("\n".join(f"{shop[item][1] if item in shop else '🎁'} {item} × {quantity}"
-                         for item,quantity in items) if items else "아직 구매한 아이템이 없어.\n*상점에서 구경해 봐!"))
-        return
-    if text.startswith("*구매"):
-        purchase = re.fullmatch(r"\*구매\s+([가-힣]{1,10})",text)
-        if not purchase or purchase.group(1) not in shop:
-            reply(token,"사용법: *구매 왕관\n판매 목록은 *상점에서 확인해 줘.")
-            return
-        item = purchase.group(1)
-        price, emoji = shop[item]
-        with db() as conn:
-            row = conn.execute("""UPDATE game_points SET points=points-%s
-                WHERE group_id=%s AND user_id=%s AND points >= %s
-                RETURNING points""",(price,group,user,price)).fetchone()
-            if row:
-                conn.execute("""INSERT INTO point_inventory(group_id,user_id,item_name,quantity)
-                    VALUES(%s,%s,%s,1) ON CONFLICT(group_id,user_id,item_name)
-                    DO UPDATE SET quantity=point_inventory.quantity+1""",(group,user,item))
-                result = f"🎉 {name}님 구매 성공!\n{emoji} {item} × 1\n💰 남은 포인트: {row[0]:,}P"
-            else:
-                current = conn.execute("SELECT points FROM game_points WHERE group_id=%s AND user_id=%s",
-                                       (group,user)).fetchone()
-                points = current[0] if current else 0
-                result = f"💸 포인트가 부족해!\n{emoji} {item}: {price:,}P\n현재 보유: {points:,}P"
-        reply(token,result)
-        return
-    if text == "*오늘미션":
-        with db() as conn:
-            row = conn.execute("""SELECT progress,claimed FROM daily_missions
-                WHERE group_id=%s AND user_id=%s AND mission_date=%s""",
-                (group,user,day)).fetchone()
-        progress, claimed = row if row else (0,False)
-        reply(token, f"🎯 {name}님의 오늘 미션\n일반 대화 30회 참여하기 ({progress}/30)\n"
-              "※ 공백 제외 4글자 이상 일반 대화만 인정, 60초 간격으로 집계\n"
-              + ("🎉 보상 수령 완료!" if claimed else
-                 "🎁 완료! *미션보상 입력해서 20P 받기" if progress >= 30 else
-                 "🏅 달성 보상: 20P\n완료 후 *미션보상 입력"))
-        return
-    if text == "*미션보상":
-        with db() as conn:
-            claimed_row = conn.execute("""UPDATE daily_missions SET claimed=TRUE
-                WHERE group_id=%s AND user_id=%s AND mission_date=%s
-                AND progress >= 30 AND claimed=FALSE RETURNING progress""",
-                (group,user,day)).fetchone()
-            if claimed_row:
-                conn.execute("""INSERT INTO game_points(group_id,user_id,points)
-                    VALUES(%s,%s,20) ON CONFLICT(group_id,user_id)
-                    DO UPDATE SET points=game_points.points+20""",(group,user))
-            else:
-                status = conn.execute("""SELECT progress,claimed FROM daily_missions
-                    WHERE group_id=%s AND user_id=%s AND mission_date=%s""",
-                    (group,user,day)).fetchone()
-        reply(token, "🎉 오늘 미션 완료! +20P 지급했어!" if claimed_row else
-              "✅ 오늘 미션 보상은 이미 받았어." if status and status[1] else
-              f"🎯 아직 미션 진행 중이야! ({status[0] if status else 0}/30)")
-        return
-    if text == "*보물상자":
-        with db() as conn:
-            existing = conn.execute("""SELECT reward FROM daily_treasure
-                WHERE group_id=%s AND user_id=%s AND treasure_date=%s""",
-                (group,user,day)).fetchone()
-            if existing:
-                reward, fresh = existing[0], False
-            else:
-                # 1% jackpot; remaining prizes 0, 5, 10, 20, or 50 points.
-                roll = secrets.randbelow(100)
-                reward = 100 if roll == 0 else (50 if roll < 6 else
-                         20 if roll < 21 else 10 if roll < 51 else
-                         5 if roll < 81 else 0)
-                inserted = conn.execute("""INSERT INTO daily_treasure(group_id,user_id,treasure_date,reward)
-                    VALUES(%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING reward""",
-                    (group,user,day,reward)).fetchone()
-                fresh = bool(inserted)
-                if fresh:
-                    conn.execute("""INSERT INTO game_points(group_id,user_id,points)
-                        VALUES(%s,%s,%s) ON CONFLICT(group_id,user_id)
-                        DO UPDATE SET points=game_points.points+EXCLUDED.points""",
-                        (group,user,reward))
-                else:
-                    reward = conn.execute("""SELECT reward FROM daily_treasure
-                        WHERE group_id=%s AND user_id=%s AND treasure_date=%s""",
-                        (group,user,day)).fetchone()[0]
-        reply(token, (f"🎁 {name}님의 보물상자!\n"
-              + (f"✨ {reward}P 획득!" if fresh else f"오늘은 이미 열었어! ({reward}P 획득 기록)")
-              + "\n⏰ 내일 0시(한국 시간)에 다시 열 수 있어."))
-        return
-    if text == "*출석":
-        from datetime import timedelta
-        yesterday = (datetime.now(KST).date() - timedelta(days=1)).isoformat()
-        with db() as conn:
-            conn.execute("""INSERT INTO game_points(group_id,user_id) VALUES(%s,%s)
-                ON CONFLICT DO NOTHING""", (group,user))
-            row = conn.execute(
-                "SELECT points,attendance_days,last_attendance FROM game_points WHERE group_id=%s AND user_id=%s FOR UPDATE",
-                (group,user)).fetchone()
-            if row[2] == day:
-                result = f"✅ {name}님은 오늘 이미 출석했어!\n💰 현재 포인트: {row[0]:,}P"
-            else:
-                streak = 5 if row[2] == yesterday else 0
-                bonus = 10 + streak
-                conn.execute("""UPDATE game_points SET points=points+%s,
-                    attendance_days=attendance_days+1,last_attendance=%s
-                    WHERE group_id=%s AND user_id=%s""",
-                    (bonus,day,group,user))
-                result = (f"✅ {name}님 출석 완료!\n🎁 +{bonus}P"
-                          + (" (어제도 출석 보너스 +5P)" if streak else "")
-                          + f"\n📅 누적 출석: {row[1]+1}일\n💰 총 포인트: {row[0]+bonus:,}P")
-        reply(token,result)
-        return
-    if text == "*내포인트":
-        row = game_stats(group,user)
-        reply(token, f"💰 {name}님의 포인트\n🏅 {row[0] if row else 0:,}P\n📅 누적 출석: {row[1] if row else 0}일")
-        return
-    if text == "*출석랭킹":
-        with db() as conn:
-            rows = conn.execute("""SELECT p.user_id,p.points,p.attendance_days,
-                COALESCE(m.display_name,LEFT(p.user_id,12)) FROM game_points p
-                LEFT JOIN member_profiles m ON m.group_id=p.group_id AND m.user_id=p.user_id
-                WHERE p.group_id=%s ORDER BY p.points DESC,p.attendance_days DESC,p.user_id LIMIT 10""",
-                (group,)).fetchall()
-        result = "🏆 우리 방 포인트 TOP 10\n" + (
-            "\n".join(f"{i}. {display}: {points:,}P (출석 {days}일)"
-                      for i, (_,points,days,display) in enumerate(rows,1))
-            if rows else "아직 출석한 사람이 없어.")
-        reply(token,result)
         return
     if text in ("*오늘운세","*행운숫자"):
         fortune, lucky = daily_fortune(group,user,day)
@@ -1920,7 +1645,6 @@ def handle(event):
             recent = {row[0] for row in conn.execute("SELECT question FROM quiz_history WHERE group_id=%s ORDER BY issued_at DESC LIMIT 200", (group,)).fetchall()}
             question, choices, correct = choose_quiz_question(recent)
             difficulty = quiz_difficulty(question)
-            reward = QUIZ_REWARDS[difficulty]
             conn.execute("INSERT INTO quiz_history(group_id,question,issued_at) VALUES(%s,%s,NOW()) ON CONFLICT(group_id,question) DO UPDATE SET issued_at=NOW()", (group,question))
             conn.execute("DELETE FROM quiz_history WHERE group_id=%s AND question NOT IN (SELECT question FROM quiz_history WHERE group_id=%s ORDER BY issued_at DESC LIMIT 200)", (group,group))
             conn.execute("""INSERT INTO quiz_rounds(group_id,question,answer,choices,difficulty,created_at)
@@ -1928,9 +1652,9 @@ def handle(event):
                 ON CONFLICT(group_id) DO UPDATE SET question=EXCLUDED.question,
                 answer=EXCLUDED.answer,choices=EXCLUDED.choices,difficulty=EXCLUDED.difficulty,created_at=NOW()""",
                 (group,question,str(correct),"|".join(choices),difficulty))
-        reply(token, f"🧠 레드봇 퀴즈!\n🏷️ 난이도: {difficulty} · 정답 보상: +{reward}P\n"+question+"\n"+
+        reply(token, f"🧠 레드봇 퀴즈!\n🏷️ 난이도: {difficulty}\n"+question+"\n"+
               "\n".join(f"{i}. {choice}" for i,choice in enumerate(choices,1))+
-              "\n\n정답은 *정답 1 처럼 입력해 줘!\n⏳ 제한시간 10분 · 상 100P / 중 50P / 하 10P\n※ 관리자만 출제 가능 · 하루 출제 횟수 무제한 · 새 퀴즈는 이전 문제를 교체해.")
+              "\n\n정답은 *정답 1 처럼 입력해 줘!\n⏳ 제한시간 10분\n※ 관리자만 출제 가능 · 하루 출제 횟수 무제한 · 새 퀴즈는 이전 문제를 교체해.")
         return
     answer_match = re.fullmatch(r"\*정답\s+([1-4])",text)
     if answer_match:
@@ -1948,13 +1672,7 @@ def handle(event):
                     result = "❌ 아쉽지만 오답이야! 다시 도전해 봐."
                 else:
                     conn.execute("DELETE FROM quiz_rounds WHERE group_id=%s",(group,))
-                    reward = QUIZ_REWARDS.get(row[2], 10)
-                    conn.execute("""INSERT INTO game_points(group_id,user_id,points)
-                        VALUES(%s,%s,%s) ON CONFLICT(group_id,user_id)
-                        DO UPDATE SET points=game_points.points+EXCLUDED.points""",(group,user,reward))
-                    points = conn.execute("SELECT points FROM game_points WHERE group_id=%s AND user_id=%s",
-                                          (group,user)).fetchone()[0]
-                    result = f"🎉 정답! {name}님 [{row[2]}] +{reward}P 획득!\n💰 현재 포인트: {points:,}P"
+                    result = f"🎉 정답! {name}님이 맞혔어! (난이도: {row[2]})"
         reply(token,result)
         return
     # Region roster: administrator-managed plain names, without LINE mentions.
