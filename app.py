@@ -55,16 +55,31 @@ def profile(group, user):
 def counts(group, day, end_day=None):
     end_day = end_day or day
     with db() as conn:
-        rows = conn.execute("""SELECT user_id,MAX(display_name),COUNT(*) AS cnt
-            FROM message_events WHERE group_id=%s AND message_date BETWEEN %s AND %s
-            GROUP BY user_id HAVING COUNT(*) >= 2
-            ORDER BY cnt DESC,MAX(display_name) ASC""", (group, day, end_day)).fetchall()
+        rows = conn.execute("""WITH totals AS (
+                SELECT user_id,COUNT(*) AS cnt FROM message_events
+                WHERE group_id=%s AND message_date BETWEEN %s AND %s
+                GROUP BY user_id HAVING COUNT(*) >= 2
+            )
+            SELECT t.user_id,COALESCE(
+                NULLIF(NULLIF(NULLIF(p.display_name,LEFT(t.user_id,12)),t.user_id),''),
+                h.display_name),t.cnt
+            FROM totals t
+            LEFT JOIN member_profiles p ON p.group_id=%s AND p.user_id=t.user_id
+            LEFT JOIN LATERAL (
+                SELECT e.display_name FROM message_events e
+                WHERE e.group_id=%s AND e.user_id=t.user_id
+                  AND e.display_name NOT IN (LEFT(t.user_id,12),t.user_id,'')
+                ORDER BY e.message_date DESC,e.message_hour DESC NULLS LAST,e.event_id DESC LIMIT 1
+            ) h ON NULLIF(NULLIF(NULLIF(p.display_name,LEFT(t.user_id,12)),t.user_id),'') IS NULL
+            ORDER BY t.cnt DESC,t.user_id""", (group, day, end_day, group, group)).fetchall()
     label = f"{day[:4]}년 {int(day[5:7])}월 {int(day[8:])}일"
     if end_day != day:
         label += f" ~ {end_day[:4]}년 {int(end_day[5:7])}월 {int(end_day[8:])}일"
     lines = [f"📊 {label} 마딧수 (2마디 이상)"]
     if not rows: return lines[0] + "\n2마디 이상 기록된 멤버가 없습니다."
-    for i, (_, name, n) in enumerate(rows, 1):
+    for i, (uid, name, n) in enumerate(rows, 1):
+        if not name:
+            name = "닉네임 확인 불가"
         item = f"{i}. {name}: {n}마디"
         if len("\n".join(lines)) + len(item) > 4500:
             lines.append("…이하 생략")
@@ -391,7 +406,8 @@ def handle(event):
         inserted = conn.execute("INSERT INTO processed_events(event_id) VALUES(%s) ON CONFLICT DO NOTHING RETURNING event_id", (eid,)).fetchone()
         if not inserted: return
         conn.execute("""INSERT INTO member_profiles(group_id,user_id,display_name) VALUES(%s,%s,%s)
-            ON CONFLICT(group_id,user_id) DO UPDATE SET display_name=EXCLUDED.display_name,updated_at=NOW()""", (group,user,name))
+            ON CONFLICT(group_id,user_id) DO UPDATE SET display_name=EXCLUDED.display_name,updated_at=NOW()
+            WHERE EXCLUDED.display_name NOT IN (LEFT(EXCLUDED.user_id,12),EXCLUDED.user_id,'')""", (group,user,name))
         conn.execute("""INSERT INTO message_events(event_id,group_id,user_id,display_name,message_date,message_hour)
             VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (eid,group,user,name,day,datetime.now(KST).hour))
     with db() as conn:
