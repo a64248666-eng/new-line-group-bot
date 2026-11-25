@@ -52,13 +52,16 @@ def profile(group, user):
     except requests.RequestException: pass
     return user[:12]
 
-def counts(group, day):
+def counts(group, day, end_day=None):
+    end_day = end_day or day
     with db() as conn:
         rows = conn.execute("""SELECT user_id,MAX(display_name),COUNT(*) AS cnt
-            FROM message_events WHERE group_id=%s AND message_date=%s
+            FROM message_events WHERE group_id=%s AND message_date BETWEEN %s AND %s
             GROUP BY user_id HAVING COUNT(*) >= 2
-            ORDER BY cnt DESC,MAX(display_name) ASC""", (group, day)).fetchall()
+            ORDER BY cnt DESC,MAX(display_name) ASC""", (group, day, end_day)).fetchall()
     label = f"{day[:4]}년 {int(day[5:7])}월 {int(day[8:])}일"
+    if end_day != day:
+        label += f" ~ {end_day[:4]}년 {int(end_day[5:7])}월 {int(end_day[8:])}일"
     lines = [f"📊 {label} 마딧수 (2마디 이상)"]
     if not rows: return lines[0] + "\n2마디 이상 기록된 멤버가 없습니다."
     for i, (_, name, n) in enumerate(rows, 1):
@@ -448,6 +451,8 @@ def handle(event):
 📊 마딧수·통계
 *마딧수
 *YYMMDD마딧수 (예: *261113마딧수)
+*261101~261125마딧수 (기간 합계)
+*261101~마딧수 (시작일부터 오늘까지)
 *방통계
 
 👥 멤버 호출
@@ -600,6 +605,22 @@ def handle(event):
         return
     if text == "*마딧수":
         reply(token, counts(group, day))
+        return
+    period_match = re.fullmatch(r"\*?(\d{6})\s*~\s*(\d{6})?\s*마딧수", text)
+    if period_match:
+        start_raw, end_raw = period_match.groups()
+        today = datetime.now(KST).date()
+        def parse_day(raw):
+            return datetime(2000 + int(raw[:2]), int(raw[2:4]), int(raw[4:6]), tzinfo=KST).date()
+        try:
+            start_date = parse_day(start_raw)
+            end_date = parse_day(end_raw) if end_raw else today
+            if not start_date <= end_date <= today:
+                raise ValueError()
+        except ValueError:
+            reply(token, "올바른 기간을 입력해 주세요. 시작일 ≤ 종료일 ≤ 오늘\n예: *261101~261125마딧수 또는 *261101~마딧수")
+            return
+        reply(token, counts(group, start_date.isoformat(), end_date.isoformat()))
         return
     match = re.fullmatch(r"\*(\d{2})(\d{2})(\d{2})마딧수", text)
     if match:
