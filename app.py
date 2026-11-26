@@ -75,17 +75,26 @@ def counts(group, day, end_day=None):
     label = f"{day[:4]}년 {int(day[5:7])}월 {int(day[8:])}일"
     if end_day != day:
         label += f" ~ {end_day[:4]}년 {int(end_day[5:7])}월 {int(end_day[8:])}일"
-    lines = [f"📊 {label} 마딧수 (2마디 이상)"]
-    if not rows: return lines[0] + "\n2마디 이상 기록된 멤버가 없습니다."
+    heading = f"📊 {label} 마딧수 (2마디 이상) · 총 {len(rows)}명"
+    if not rows: return [heading + "\n2마디 이상 기록된 멤버가 없습니다."]
+    pages = []
+    lines = [heading]
     for i, (uid, name, n) in enumerate(rows, 1):
-        if not name:
-            name = "닉네임 확인 불가"
-        item = f"{i}. {name}: {n}마디"
-        if len("\n".join(lines)) + len(item) > 4500:
-            lines.append("…이하 생략")
-            break
+        item = f"{i}. {name or '닉네임 확인 불가'}: {n}마디"
+        if len(("\n".join(lines) + "\n" + item).encode("utf-16-le")) // 2 > 4500:
+            pages.append("\n".join(lines))
+            lines = [heading + " (계속)"]
         lines.append(item)
-    return "\n".join(lines)
+    pages.append("\n".join(lines))
+    return pages
+
+def reply_counts(token, group, pages):
+    messages = [{"type":"text","text":page} for page in pages]
+    r = requests.post(API + "/message/reply", json={"replyToken":token,"messages":messages[:5]}, headers=headers(), timeout=12)
+    r.raise_for_status()
+    for i in range(5, len(messages), 5):
+        r = requests.post(API + "/message/push", json={"to":group,"messages":messages[i:i+5]}, headers=headers(), timeout=12)
+        r.raise_for_status()
 
 def utf16len(s):
     return len(s.encode("utf-16-le")) // 2
@@ -620,7 +629,7 @@ def handle(event):
               f"※ 레드봇이 수집한 텍스트 메시지 기준. 시간대는 업데이트 이후 기록부터 집계돼.")
         return
     if text == "*마딧수":
-        reply(token, counts(group, day))
+        reply_counts(token, group, counts(group, day))
         return
     period_match = re.fullmatch(r"\*?(\d{6})\s*~\s*(\d{6})?\s*마딧수", text)
     if period_match:
@@ -636,7 +645,7 @@ def handle(event):
         except ValueError:
             reply(token, "올바른 기간을 입력해 주세요. 시작일 ≤ 종료일 ≤ 오늘\n예: *261101~261125마딧수 또는 *261101~마딧수")
             return
-        reply(token, counts(group, start_date.isoformat(), end_date.isoformat()))
+        reply_counts(token, group, counts(group, start_date.isoformat(), end_date.isoformat()))
         return
     match = re.fullmatch(r"\*(\d{2})(\d{2})(\d{2})마딧수", text)
     if match:
@@ -647,7 +656,7 @@ def handle(event):
         except ValueError:
             reply(token, "올바른 과거 날짜를 입력해 주세요. 예: *261111마딧수")
             return
-        reply(token, counts(group, date.isoformat()))
+        reply_counts(token, group, counts(group, date.isoformat()))
         return
     if text in ("*남초", "*여초"):
         reply_message(token, mention_text(group, text[1:]))
