@@ -688,6 +688,27 @@ def ensure_db():
             initialize()
             _ready = True
 
+_cleanup_month = None
+_cleanup_lock = Lock()
+
+@app.before_request
+def reset_monthly_chat_history():
+    global _cleanup_month
+    if request.path != "/callback":
+        return
+    now = datetime.now(KST)
+    month = now.strftime("%Y-%m")
+    if _cleanup_month == month:
+        return
+    with _cleanup_lock:
+        if _cleanup_month == month:
+            return
+        # Keep November records until the first scheduled reset.
+        if month >= "2026-12":
+            with db() as conn:
+                conn.execute("DELETE FROM message_events WHERE message_date < %s", (month + "-01",))
+        _cleanup_month = month
+
 @app.get("/")
 def health():
     return {"status": "ok", "bot": "Red Bot 3.0"}
