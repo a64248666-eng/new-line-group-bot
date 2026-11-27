@@ -400,6 +400,24 @@ def daily_fortune(group, user, day):
     )
     return fortunes[digest[0] % len(fortunes)], digest[1] % 45 + 1
 
+
+def weekly_member_counts(group, target, day):
+    from datetime import timedelta
+    today = datetime.fromisoformat(day).date()
+    days = [(today - timedelta(days=i)).isoformat() for i in range(6, -1, -1)]
+    with db() as conn:
+        rows = dict(conn.execute(
+            "SELECT message_date, COUNT(*) FROM message_events WHERE group_id=%s AND user_id=%s AND message_date BETWEEN %s AND %s GROUP BY message_date",
+            (group, target, days[0], days[-1])).fetchall())
+    total = sum(rows.values())
+    lines = [f"📊 {profile(group, target)} 주간 마딧수", f"{days[0]} ~ {days[-1]}"]
+    for d in days:
+        lines.append(f"{d[5:]} ({'월화수목금토일'[datetime.fromisoformat(d).weekday()]}) : {rows.get(d, 0)}마디")
+    lines.extend([f"총합: {total}마디", f"일평균: {total / 7:.1f}마디"])
+    if days[0][:7] != day[:7]:
+        lines.append("※ 월별 초기화로 이전 달 기록은 조회되지 않을 수 있습니다.")
+    return "\n".join(lines)
+
 def handle(event):
     source = event.get("source") or {}
     group, user = source.get("groupId"), source.get("userId")
@@ -475,6 +493,7 @@ def handle(event):
 
 📊 마딧수·통계
 *마딧수
+*@닉네임 마딧수 (최근 7일, 실제 멘션)
 *YYMMDD마딧수 (예: *261113마딧수)
 *261101~261125마딧수 (기간 합계)
 *261101~마딧수 (시작일부터 오늘까지)
@@ -627,6 +646,13 @@ def handle(event):
               f"💬 총 메시지: {week_row[0]:,}개\n"
               f"👥 활동 인원: {week_row[1]:,}명\n"
               f"※ 레드봇이 수집한 텍스트 메시지 기준. 시간대는 업데이트 이후 기록부터 집계돼.")
+        return
+    if re.fullmatch(r"\*\s*@.+\s*마딧수", text):
+        targets = (message.get("mention") or {}).get("mentionees", [])
+        if len(targets) != 1 or not targets[0].get("userId"):
+            reply(token, "사용법: *@닉네임 마딧수 (한 명을 실제 LINE 멘션)")
+            return
+        reply(token, weekly_member_counts(group, targets[0]["userId"], day))
         return
     if text == "*마딧수":
         reply_counts(token, group, counts(group, day))
